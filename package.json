@@ -1,7 +1,7 @@
 {
   "name": "dsh-decision-orchestrator",
   "version": "0.1.0",
-  "description": "Let a local decision model judge what your agent should do next, and either nudge it along or stop and wait for you.",
+  "description": "Run a workspace's fixed review pipeline in DeepSeek Harness: each step fires when the agent finishes the last one, and the pipeline pauses where you have to decide.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -9,8 +9,9 @@
     "dsh",
     "dsh-plugin",
     "agent",
-    "orchestration",
-    "llama.cpp"
+    "workflow",
+    "pipeline",
+    "orchestration"
   ],
   "exports": {
     ".": "./host.js",
@@ -33,12 +34,7 @@
   },
   "dsh": {
     "client": {
-      "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-context-menu",
-        "@deepseek-ai/dsh-client-ui-workspace",
-        "@deepseek-ai/dsh-client-ui-renderer"
-      ]
+      "platform": "web"
     }
   }
 }

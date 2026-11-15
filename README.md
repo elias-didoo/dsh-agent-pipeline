@@ -184,7 +184,7 @@ Two different languages are in play, and they follow different rules.
 | What | Follows |
 |---|---|
 | Panel text, and the "please continue" prompt sent to the agent | **Your DSH language setting** |
-| Stage criteria (the text sent to the decision model) | **Chinese, always** |
+| Branch criteria (the text sent to the decision model) | **Chinese, always** |
 
 The panel reads the language from DSH settings, so it matches the rest of the
 UI without extra configuration. If you have never explicitly picked a language
@@ -311,18 +311,23 @@ tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 
 | `ev` | Meaning |
 |---|---|
-| `apply` / `projection-ready` | Plugin mounted, projection ready |
+| `apply` | Plugin mounted |
+| `config-invalid` / `config-validate-fail` | The config was rejected; `errors` lists why, and the feature stays off |
 | `locale` | UI language resolved for this process |
-| `judge` | One judgement; includes `decision`, `confidence`, full `probabilities` |
-| `pick` | Which decision point was selected; includes `decision`, `progress` |
-| `halt` | A stop rule fired; auto-advance paused. `ruleId` says which |
-| `stop` | Terminated by an error or the iteration limit. `why` says why |
-| `uncertain` | Confidence below the floor, no judgement made |
-| `send` | A prompt was sent; includes `ruleId`, `iterations` |
+| `projection-ready` | Projection registered and ready |
+| `tools-registered` | `start_flow` registered, with the flow names it offers |
+| `commands-registered` | The panel's `flow` command registered |
+| `flow-start` | A flow was started; `flow` says which |
+| `flow-control` | Pause, resume or cancel was applied; `action` says which |
+| `send` | A step's prompt was sent; `step`, `iteration` |
+| `advance` | A step was passed without a message (a wait the user had answered) |
+| `branch` | The model chose a direction; `step`, `choice`, `target`, `confidence` |
+| `judge` | One model call at a branch; includes `confidence` and full `probabilities` |
+| `halt` | The flow paused. `step` and `why` (`stop` or `wait-user`) say where and why |
+| `skip` | Held back, no action. `why` explains: `no-flow`, `awaiting-user`, arbitration reasons, `flow-paused`, `empty-input` |
+| `uncertain` | Confidence below the floor at a branch; the flow held instead of guessing |
+| `error` / `retry` / `stop` | A turn failed, was retried, or the run terminated — `why` says which |
 | `send-fail` | Send failed; includes `err` |
-| `skip` | Held back, no action. `why` explains (arbitration, paused, empty input, …) |
-| `error` | One execution failed but below the termination threshold |
-| `retry` | Re-sent "please continue" after a network interruption |
 
 ## Tests
 
@@ -348,4 +353,4 @@ node test/all.mjs --fast   # skip the live-model suite
 tail -20 ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 ```
 
-Key `ev` values: `judge` (decision and confidence), `pick` (which decision point), `send`, `skip` (held back — see `why`), `halt` (paused by a stop point), `stop` (terminated by an error or limit).
+Key `ev` values: `send` (a step fired), `advance` (a silent step passed), `branch` (the model chose a direction), `halt` (the flow paused — `step` and `why` say where), `skip` (held back — `why` says why), `stop` (terminated by an error or limit).

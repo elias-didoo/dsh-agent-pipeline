@@ -2,7 +2,7 @@
 
 **中文** | [English](README.md)
 
-[DeepSeek Harness](https://github.com/deepseek-ai) 插件：在 agent 每一轮工作结束后，用本地决策模型判断当前该做什么，按你配置的决策点自动推进。
+[DeepSeek Harness](https://github.com/deepseek-ai) 插件：跑一个工作区固定的评审流程，agent 做完上一步就发下一步，只在你留了岔路的地方才问本地决策模型。
 
 > **它不替你思考，只是把「下一步该做什么」这一判断交给一个模型，然后按你写好的决策点执行。**
 
@@ -268,18 +268,23 @@ tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 
 | `ev` | 含义 |
 |---|---|
-| `apply` / `projection-ready` | 插件挂载、投影就绪 |
+| `apply` | 插件已挂载 |
+| `config-invalid` / `config-validate-fail` | 配置被拒；`errors` 说明原因，功能保持关闭 |
 | `locale` | 本次进程解析出的界面语言 |
-| `judge` | 一次判定；含 `decision`、`confidence`、完整 `probabilities` |
-| `pick` | 选中了哪个决策点；含 `decision`、`progress` |
-| `halt` | 命中 stop 决策点，自动推进已暂停 |
-| `stop` | 因错误或迭代上限而终止；`why` 说明原因 |
-| `uncertain` | 置信度不足，未做判定 |
-| `send` | 自动发送了一条提示词；含 `ruleId`、`iterations` |
+| `projection-ready` | 投影已注册就绪 |
+| `tools-registered` | `start_flow` 已注册，含可用的流程名 |
+| `commands-registered` | 面板的 `flow` 命令已注册 |
+| `flow-start` | 启动了某条流程；`flow` 说明是哪条 |
+| `flow-control` | 暂停/继续/取消已生效；`action` 说明是哪个 |
+| `send` | 发出了某一步的提示词；含 `step`、`iteration` |
+| `advance` | 某步没发消息就通过了（用户已回答的等待） |
+| `branch` | 模型选了方向；含 `step`、`choice`、`target`、`confidence` |
+| `judge` | 分支上一次模型调用；含 `confidence` 与完整 `probabilities` |
+| `halt` | 流程暂停；`step` 和 `why`（`stop` 或 `wait-user`）说明位置与原因 |
+| `skip` | 被拦下没动作；`why` 说明原因：`no-flow`、`awaiting-user`、仲裁原因、`flow-paused`、`empty-input` |
+| `uncertain` | 分支处置信度不足，流程停住而不是猜 |
+| `error` / `retry` / `stop` | 某一轮出错、重试或终止；`why` 说明是哪种 |
 | `send-fail` | 发送失败；含 `err` |
-| `skip` | 被拦下没动作；`why` 说明原因 |
-| `error` | 单次执行出错但未到终止阈值 |
-| `retry` | 网络中断后自动重发「请继续」 |
 
 ## 测试
 
