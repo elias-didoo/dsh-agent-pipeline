@@ -7,10 +7,15 @@ const host = await import("../host.js")
 const config = {
   model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
   defaults: { maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.3, humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3 },
-  workspaces: [{ path: "/tmp/dsh-decision-orchestrator-test-workspace", enabled: true, decisions: [
-    {id:"r1",when:"agent 刚给出方案",do:"send",prompt:"p1",notifyText: ""},
-    {id:"r2",when:"agent 提问等你回答",do:"stop",prompt:"",notifyText:"等你"},
-  ]}],
+  workspaces: [{
+    path: "/tmp/dsh-decision-orchestrator-test-workspace",
+    enabled: true,
+    steps: {
+      plan: { id: "plan", do: "send", prompt: "p1" },
+      wait: { id: "wait", do: "stop", notifyText: "等你" },
+    },
+    flows: { demo: { label: { en: "Demo", zh: "演示" }, steps: ["plan", "wait"] } },
+  }],
 }
 
 let registered = null
@@ -34,7 +39,10 @@ const t=(n,f)=>{try{f();pass++;console.log("  ✅ "+n)}catch(e){fail++;console.l
 const assert=(c,m)=>{if(!c)throw new Error(m)}
 
 console.log("=== apply() simulation ===")
-t("apply does not throw", () => { host.apply(ctx, config) })
+let apis
+t("apply does not throw", () => { apis = host.apply(ctx, config) })
+/** The read-only surface apply returns; used by the workspace tests below. */
+const hostApis = () => apis
 t("projection registered", () => assert(registered, "not registered"))
 t("projection has every required field", () => {
   for (const k of ["key","stateVersion","stateSchema","init","apply","wire"]) assert(registered[k] !== undefined, `missing ${k}`)
@@ -44,31 +52,35 @@ t("projection has every required field", () => {
 t("stateSchema parses the initial state", () => {
   const s = registered.stateSchema.parse(registered.init({ cwd: "/x" }, 0))
   assert(typeof s.enabled === "boolean", "enabled")
-  assert(Array.isArray(s.decisionsView), "decisionsView")
+  assert(s.flow === null, "no flow before one starts")
 })
-t("init carries the workspace rules", () => {
+t("init marks the workspace enabled", () => {
   const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
   assert(s.enabled === true, "enabled should be true")
-  assert(s.decisionsView.length === 2, `decisionsView should hold 2 entries, got ${s.decisionsView.length}`)
 })
-t("decisionsView carries every field the client needs to render", () => {
-  // The client shows `when` verbatim and `notifyText` for a stop; losing either
-  // degrades silently.
-  const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
-  const r1 = s.decisionsView.find((r) => r.id === "r1")
-  assert(r1, "r1 not found")
-  assert(r1.when === "agent 刚给出方案", `when lost: ${r1.when}`)
-  assert(r1.do === "send", `do should be send, got ${r1.do}`)
-  assert(r1.prompt === "p1", `prompt lost: ${r1.prompt}`)
-  const r2 = s.decisionsView.find((r) => r.id === "r2")
-  assert(r2.do === "stop", `do should be stop, got ${r2.do}`)
-  assert(r2.notifyText === "等你", `notifyText should be 等你, got ${r2.notifyText}`)
+
+t("stateSchema keeps a recorded flow and drops a malformed one", () => {
+  // The projection is read back from a checkpoint after a restart; a row
+  // written by a different version must not take the whole session down.
+  const good = registered.stateSchema.parse({ enabled: true, flow: {
+    name: "demo", status: "paused", startedAt: 5, since: 7, note: "n",
+    branches: { b: "plan" }, passed: ["wait"],
+  } })
+  assert(good.flow.name === "demo", "name kept")
+  assert(good.flow.status === "paused", "status kept")
+  assert(good.flow.passed[0] === "wait", "passed kept")
+
+  for (const bad of [null, {}, { name: 42 }, { name: "" }]) {
+    const s = registered.stateSchema.parse({ enabled: true, flow: bad })
+    assert(s.flow === null, `malformed flow ${JSON.stringify(bad)} should be dropped`)
+  }
 })
+
 t("view output passes viewSchema", () => {
   const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
   const v = registered.wire.viewSchema.parse(registered.wire.view(s))
   assert(v.enabled === true, "enabled")
-  assert(Array.isArray(v.decisions) && v.decisions.length === 2, "decisions")
+  assert(v.flow === null, "no flow yet")
 })
 t("apply returns the same reference for non turn/end events", () => {
   const s = { failures: 0 }
@@ -118,18 +130,24 @@ await t("viewSchema preserves every field viewOf produces", () => {
   }
 })
 
-await t("the view carries the decision points themselves", () => {
-  // Without them the panel has nothing to render — the projection would show a
-  // workspace as enabled with no content.
-  const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
-  const v = registered.wire.viewSchema.parse(registered.wire.view(s))
-  assert(Array.isArray(v.decisions), "view.decisions must be an array")
-  assert(v.decisions.length > 0, "view.decisions must not be empty for an enabled workspace")
-  for (const d of v.decisions) {
-    assert(typeof d.id === "string" && d.id.length > 0, "each decision needs an id")
-    assert(typeof d.when === "string" && d.when.length > 0, `decision ${d.id} needs when`)
-    assert(["send", "stop", "silent"].includes(d.do), `decision ${d.id} has a bad do`)
-  }
+await t("the workspace description carries the flows and their steps", () => {
+  // This is what the panel reads to render a flow's step list before any flow
+  // has started. An enabled workspace with no flows here renders as an empty
+  // panel with nothing explaining why.
+  const ws = hostApis().getWorkspace("/tmp/dsh-decision-orchestrator-test-workspace")
+  assert(ws.enabled === true, "workspace should be enabled")
+  assert(Array.isArray(ws.flows) && ws.flows.length === 1, `expected one flow, got ${ws.flows?.length}`)
+  const flow = ws.flows[0]
+  assert(flow.name === "demo", `flow name lost: ${flow.name}`)
+  assert(flow.steps.join(",") === "plan,wait", `flow steps lost: ${flow.steps}`)
+  assert(ws.steps.plan.prompt === "p1", "step prompt lost")
+  assert(ws.steps.wait.notifyText === "等你", "step notifyText lost")
+})
+
+await t("an unknown workspace reads as disabled rather than missing", () => {
+  const ws = hostApis().getWorkspace("/nowhere")
+  assert(ws.enabled === false, "should be disabled")
+  assert(Array.isArray(ws.flows) && ws.flows.length === 0, "should carry no flows")
 })
 
 console.log("\n=== apply survives a broken host ===")

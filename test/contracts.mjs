@@ -15,6 +15,16 @@ import { fileURLToPath } from "node:url"
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const hostSrc = readFileSync(join(ROOT, "host.js"), "utf8")
 const clientSrc = readFileSync(join(ROOT, "client.js"), "utf8")
+/**
+ * client.js with comments stripped.
+ *
+ * Structural checks match code, and the file's header comment quotes the very
+ * `slots.register({ name, id, locale, inject }, Component)` shape those checks
+ * look for — matching the whole file would pass or fail on a doc example.
+ */
+const clientCode = clientSrc
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/(^|[^:])\/\/.*$/gm, "$1")
 
 let pass = 0
 let fail = 0
@@ -46,25 +56,45 @@ await t("init and apply present", () => {
   has(hostSrc, /^\s*apply:\s*applyEvent,\s*$/m, "missing apply")
 })
 
-console.log("\n=== 2. contextMenus contract ===")
-await t("target/id/order/resolve all present", () => {
-  has(clientSrc, /target:\s*"workspace"/, "missing target")
-  has(clientSrc, /id:\s*"workspace\.decisionOrchestrator"/, "missing id")
-  has(clientSrc, /order:\s*\d+/, "missing order")
-  has(clientSrc, /resolve:\s*\(\{[^}]*\}\)\s*=>/, "missing resolve")
+console.log("\n=== 2. The client registers into the dock, not a menu ===")
+
+await t("the client no longer registers a context menu", () => {
+  // The old panel opened from a workspace right-click. The flow is now a
+  // standing panel; a menu entry that opens a second view of the same state
+  // would be two places to keep in step.
+  assert(!/contextMenus/.test(clientCode), "client must not register a context menu")
 })
 
 console.log("\n=== 3. slots contract ===")
-await t("slots.inject uses the generator form", () =>
-  has(clientSrc, /slots\.inject\("shell\.overlay",\s*function\s*\*/, "slots.inject callback must be a generator"))
-await t("the component is register's second argument", () =>
-  has(clientSrc, /slots\.register\([\s\S]*?\},\s*makePanelHost\([^)]*\)\s*,?\s*\)/, "component must be register's second argument"))
-await t("register definition has name/id/inject", () => {
-  const m = /slots\.register\(([\s\S]*?)\},\s*makePanelHost/.exec(clientSrc)
-  assert(m, "register call not found")
-  for (const k of ["name", "id", "inject"]) {
-    assert(new RegExp(`\\b${k}\\s*:`).test(m[1]), `register definition missing ${k}`)
+
+await t("slots.inject targets the composer dock and uses the generator form", () => {
+  has(clientCode, /slots\.inject\(\s*"conversation\.composer\.dock"\s*,\s*function\s*\*/, 'slots.inject must target "conversation.composer.dock" with a generator')
+})
+
+/** The source text of the object literal passed to slots.register(). */
+function registerDefinition() {
+  const at = clientCode.indexOf("slots.register(")
+  assert(at >= 0, "register call not found")
+  const open = clientCode.indexOf("{", at)
+  let depth = 0
+  for (let i = open; i < clientCode.length; i++) {
+    if (clientCode[i] === "{") depth++
+    else if (clientCode[i] === "}") { depth--; if (depth === 0) return clientCode.slice(open, i + 1) }
   }
+  throw new Error("register definition is unbalanced")
+}
+
+await t("the register definition names the entry and gives it an id", () => {
+  const def = registerDefinition()
+  for (const k of ["name", "id"]) {
+    assert(new RegExp(`\\b${k}\\s*:`).test(def), `register definition missing ${k}`)
+  }
+})
+
+await t("the dock entry gives itself an id of its own", () => {
+  // Reusing a shipped id would replace that entry rather than sit beside it.
+  const id = /\bid:\s*"([^"]+)"/.exec(registerDefinition())?.[1]
+  assert(id === "flow", `dock entry id should be "flow", got ${id}`)
 })
 
 console.log("\n=== 4. Client ModuleLoader contract ===")
@@ -72,49 +102,32 @@ await t("id equals the package name", async () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
   assert(clientSrc.includes(`id: "${pkg.name}"`), `ModuleLoader id must equal package.json name (${pkg.name})`)
 })
-await t("factory yields { inject, apply }", () => {
-  const m = /return\s*\{[\s\S]*?inject:\s*\[([^\]]*)\]/.exec(clientSrc)
-  assert(m, "factory inject declaration not found")
-  assert(m[1].includes('"slots"'), "inject is missing slots")
-  has(clientSrc, /apply\(ctx\)/, "missing apply")
+await t("factory returns { apply, inject }", () => {
+  const m = /return\s*\{[^}]*apply[^}]*\}/.exec(clientSrc)
+  assert(m, "factory must return the apply entry point")
+  has(clientSrc, /function applyClient\(ctx\)/, "missing applyClient")
 })
 
-console.log("\n=== 4b. client inject covers every service used ===")
-await t("every ctx.<service> used is declared in inject", () => {
-  // Cordis' Proxy throws for any ctx.xxx not injected; if a try/catch swallows
-  // it, the plugin degrades silently (this once left the GUI permanently
-  // showing "no session in this workspace").
-  const decl = /inject:\s*\[([^\]]+)\]/.exec(clientSrc)
-  assert(decl, "inject declaration not found")
-  const declared = new Set(
-    decl[1].split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean),
-  )
-  // Strip comments so a ctx.xxx mentioned in prose is not read as a real call.
-  const code = clientSrc
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1")
-  const used = new Set()
-  for (const m of code.matchAll(/ctx\.([a-zA-Z]+)/g)) used.add(m[1])
-  // These are not Cordis services.
-  for (const notService of ["effect", "on", "get", "logger"]) used.delete(notService)
-  const missing = [...used].filter((k) => !declared.has(k))
-  assert(missing.length === 0, `inject is missing: ${missing.join(", ")}`)
-})
+console.log("\n=== 4c. The client renders the view the host computed ===")
 
-console.log("\n=== 4c. client holds no decision or action table of its own ===")
-
-await t("client renders decision points from the projection", () => {
+await t("the client reads the flow from the projection", () => {
   // A hardcoded copy in the client is a second source of truth: it drifts from
-  // config and the panel then shows something the plugin will never do.
+  // the machine and the panel then shows something the pipeline will never do.
   assert(!/const STAGE_ORDER\s*=/.test(clientSrc), "client must not hardcode an order")
-  assert(!/const STAGE_TEXT\s*=/.test(clientSrc), "client must not hardcode labels")
-  assert(/info\?\.decisions/.test(clientSrc), "client must read decisions from the projection")
-  assert(/renderDecision\(/.test(clientSrc), "client must render a decision point")
+  assert(/useProjection\?\.\(\s*PROJECTION_KEY\s*\)/.test(clientCode), "client must read the projection")
+  assert(/view\?\.flow/.test(clientCode), "client must read the flow from the projection view")
 })
 
-await t("client action labels come from the dictionary, not a local table", () => {
-  assert(!/const ACTION_TEXT\s*=/.test(clientSrc), "client must not hardcode action text")
-  assert(/t\(`action\.\$\{action\}`\)/.test(clientSrc), "action label must be translated by key")
+await t("the client never writes flow state itself", () => {
+  // The host owns the flow. A client-side write would be a second copy that
+  // the next projection overwrites, so the button would appear to do nothing.
+  assert(!/status:\s*"paused"/.test(clientCode), "client must not construct a state")
+  assert(/remote\?\.commands/.test(clientCode), "control must go through the host command")
+})
+
+await t("status marks are distinct", () => {
+  const marks = new Set([/done[^\n]*"\\u25CF"|"\\u25CF"/.exec(clientSrc)?.[0], /"\\u25D0"/.exec(clientSrc)?.[0], /"\\u25CB"/.exec(clientSrc)?.[0]])
+  assert(marks.size === 3, "done, ongoing and pending need three different marks")
 })
 
 await t("client registers a dictionary for every language the host ships", () => {
@@ -145,13 +158,11 @@ await t("every test file's t() awaits fn()", async () => {
   assert(bad.length === 0, `these files do not await in t(), so async assertion failures vanish: ${bad.join(", ")}`)
 })
 
-await t("the action enum has one owner", async () => {
-  const { DECISION_ACTIONS } = await import("../lib/decisions.js")
-  const cm = /const DICT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
-  assert(cm, "DICT not found")
-  for (const a of DECISION_ACTIONS) {
-    assert(cm[1].includes(`"action.${a}"`), `dictionary is missing action.${a}`)
-  }
+await t("the step kinds have one owner", async () => {
+  // STEP_KINDS is what the config validator enforces and what the client
+  // colour-codes; a kind added to one and not the other renders as unknown.
+  const { STEP_KINDS } = await import("../lib/flow-spec.js")
+  assert(STEP_KINDS.length === 4, `expected four kinds, got ${STEP_KINDS.length}`)
 })
 
 console.log("\n=== 5. v4 message-source contract ===")
@@ -167,7 +178,7 @@ await t("waits for durability after sending", () => has(actionSrc, /await ctx\.s
 
 console.log("\n=== 6. Zero external dependencies ===")
 await t("does not import @deepseek-ai/*", () => {
-  for (const f of ["host.js", "client.js", "lib/action.js", "lib/arbiter.js", "lib/config.js", "lib/context.js", "lib/core.js", "lib/judge.js", "lib/log.js", "lib/message.js", "lib/progress.js", "lib/decisions.js", "lib/host-locale.js"]) {
+  for (const f of ["host.js", "client.js", "lib/action.js", "lib/arbiter.js", "lib/config.js", "lib/context.js", "lib/core.js", "lib/flow-machine.js", "lib/flow-spec.js", "lib/flow-tools.js", "lib/judge.js", "lib/log.js", "lib/message.js", "lib/host-locale.js"]) {
     const src = readFileSync(join(ROOT, f), "utf8")
     const bad = /^\s*import\s+[^;]*from\s+["']@deepseek-ai\//m.exec(src)
     assert(!bad, `${f} still imports an external package: ${bad?.[0]?.trim()}`)

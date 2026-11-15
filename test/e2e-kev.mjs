@@ -1,15 +1,19 @@
 /**
- * End-to-end: a real model judgement driving the full main loop, using the
- * twelve decision points a real workspace actually configures.
+ * End-to-end: the real model driving the full main loop, against the flows a
+ * real workspace configures.
  *
- * The assertion is "this situation → this decision point", not "something
- * happened". The latter passes vacuously: failing to match anything falls back
- * to the uncertain path, which is a legitimate outcome and would hide a broken
- * criteria set.
+ * Two things are asserted, and they fail for different reasons:
  *
- * The `when` texts here are the ones a user would write, so a failure here means
- * the prompts themselves need work — which is exactly what a live run would tell
- * you, only faster.
+ *   the pipeline   given a conversation and a flow position, does the loop do
+ *                  the next thing the flow says? A send is deterministic, so a
+ *                  failure here is a state-machine bug.
+ *
+ *   the branch     given a conversation sitting on a fork, does the model pick
+ *                  the right way? A failure here means the question or its
+ *                  criteria need work.
+ *
+ * The branch cases are the ones worth watching, because they are the only place
+ * a model is consulted.
  */
 
 // Route this run's logs to a temp dir so no invocation ever pollutes real logs.
@@ -19,431 +23,436 @@ process.env.DECISION_ORCHESTRATOR_LOG_DIR ??=
 const { readFileSync } = await import("node:fs")
 const { join } = await import("node:path")
 
-const { handleTurnEnd } = await import("../lib/core.js")
+const { handleTurnEnd, beginFlow } = await import("../lib/core.js")
+const { validate, effectiveConfig } = await import("../lib/config.js")
 
 const ROOT = new URL("..", import.meta.url).pathname
 
 const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
 /**
- * A message the plugin sent earlier, with the text it actually sends.
+ * Read the fixture through the same validator the plugin uses at load.
  *
- * Taken from the fixture rather than written out here: a history built from
- * paraphrases is not the conversation the plugin produces, and the model
- * reading it makes different choices. Four of six hand-written versions of
- * these prompts differed from the real ones before this was fixed.
+ * No hand-written parser: one that disagrees with the real validator would test
+ * a configuration nobody runs, which is the drift this file exists to catch.
+ * The fixture is a fragment of cordis.patch.yml indented under `config:`.
  */
-const PLUGIN = (ruleId) => {
-  const d = workspace.decisions.find((x) => x.id === ruleId)
-  if (!d) throw new Error(`PLUGIN(${ruleId}): no such decision point`)
+function loadFixture() {
+  // A minimal YAML reader for this file's shape: the project has no
+  // dependencies, and the fixture is nested maps, lists and scalars only.
+  const source = readFileSync(join(ROOT, "fixtures/brandu.yml"), "utf8")
+  const parsed = parseYamlFragment(source)
+  const r = validate({ model: { baseUrl: "http://127.0.0.1:8080" }, workspaces: parsed.workspaces })
+  assert(!r.issues, `fixture does not validate: ${r.issues?.map((i) => i.message).join("; ")}`)
+  return { config: r.value, workspace: r.value.workspaces[0] }
+}
+
+/**
+ * Parse the fixture's narrow YAML subset.
+ *
+ * Supports nested maps, `- key: value` list items, and block sequences written
+ * inline as `[a, b]`. Anything else would be a shape this file does not use.
+ */
+function parseYamlFragment(text) {
+  const lines = []
+  for (const raw of text.split("\n")) {
+    if (!raw.trim() || raw.trim().startsWith("#")) continue
+    lines.push({ indent: raw.length - raw.trimStart().length, text: raw.trim() })
+  }
+  let i = 0
+  const unsquote = (v) => {
+    const t = v.trim()
+    if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
+      // Inline flow collections: { en: X, zh: Y } and [a, b].
+      const inner = t.slice(1, -1).trim()
+      if (!inner) return t.startsWith("[") ? [] : {}
+      if (t.startsWith("[")) return inner.split(",").map((x) => unsquote(x))
+      const out = {}
+      for (const pair of inner.split(/,\s*(?=\w+:)/)) {
+        const at = pair.indexOf(":")
+        out[pair.slice(0, at).trim()] = unsquote(pair.slice(at + 1))
+      }
+      return out
+    }
+    // Scalars: booleans and numbers, so `enabled: true` is not the string
+    // "true" — a validator that checks `=== true` would reject it.
+    if (t === "true") return true
+    if (t === "false") return false
+    if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t)
+    return t
+  }
+  const block = (indent) => {
+    const out = lines[i] && lines[i].text.startsWith("- ") ? [] : {}
+    while (i < lines.length) {
+      const { indent: ind, text: t } = lines[i]
+      if (ind < indent) break
+      if (ind > indent) break
+      if (t.startsWith("- ")) {
+        if (!Array.isArray(out)) break
+        i++
+        const rest = t.slice(2)
+        // `- id: x` opens a map whose remaining keys are indented deeper.
+        if (/^\w[\w-]*:/.test(rest)) {
+          const item = {}
+          i-- // rewind so the generic map reader sees the first key
+          lines[i] = { indent: ind + 2, text: rest }
+          Object.assign(item, block(ind + 2))
+          out.push(item)
+        } else {
+          out.push(unsquote(rest))
+        }
+        continue
+      }
+      if (Array.isArray(out)) break
+      const at = t.indexOf(":")
+      const key = t.slice(0, at).trim()
+      const tail = t.slice(at + 1).trim()
+      i++
+      if (tail) {
+        out[key] = unsquote(tail)
+      } else {
+        const childIndent = lines[i]?.indent ?? ind + 2
+        out[key] = block(childIndent)
+      }
+    }
+    return out
+  }
+  const first = lines[0]?.indent ?? 0
+  return block(first)
+}
+
+const { config: fixtureConfig, workspace } = loadFixture()
+const WS = workspace.path
+
+/** A message the plugin sent earlier, with the text it actually sends. */
+const PLUGIN = (stepId) => {
+  const step = workspace.steps[stepId]
+  if (!step) throw new Error(`PLUGIN(${stepId}): no such step`)
   return {
     role: "user",
-    source: { kind: "decision", ruleId },
-    content: [{ type: "text", text: d.prompt }],
+    source: { kind: "decision", ruleId: stepId },
+    content: [{ type: "text", text: step.prompt }],
     time: Date.now() - 30000,
   }
 }
 
-/**
- * Build the workspace config from the fixture, which is the same file the
- * deployed profile carries.
- *
- * Parsed by hand rather than with a YAML library: the project has no
- * dependencies, and this file's shape is fixed — a decisions list of scalar
- * fields. A parser bug would show up as a missing decision point, which the
- * assertion on the count catches.
- */
-function loadFixture() {
-  const text = readFileSync(join(ROOT, "fixtures/brandu.yml"), "utf8")
-  const decisions = []
-  for (const chunk of text.split(/^\s*- id:\s*/m).slice(1)) {
-    const id = chunk.split("\n")[0].trim()
-    const field = (name) => {
-      const m = new RegExp(`^\\s*${name}:\\s*(.+?)\\s*$`, "m").exec(chunk)
-      return m ? m[1] : ""
-    }
-    const doWhat = field("do")
-    decisions.push({ id, when: field("when"), do: doWhat, prompt: field("prompt"), notifyText: field("notifyText") })
-  }
-  assert(decisions.length > 0, "fixture produced no decision points")
-  const pathMatch = /^\s*- path:\s*(.+)$/m.exec(text)
-  return {
-    path: pathMatch ? pathMatch[1].trim() : "",
-    enabled: /^\s*enabled:\s*true$/m.test(text),
-    decisions,
-  }
-}
+/** A message from the user. */
+const HUMAN = (text, ageMs = 200000) => ({
+  role: "user",
+  source: { kind: "user" },
+  content: [{ type: "text", text }],
+  time: Date.now() - ageMs,
+})
 
-/**
- * The tunables the fixture does not carry: model endpoint and defaults.
- *
- * These are not decision points, but a drift in them changes behaviour just as
- * much — a different confidenceFloor silently changes which answers count as
- * confident. Read from the profile when it is there, otherwise the defaults
- * below stand in.
- */
-function loadTunables() {
-  const fallback = {
-    model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
-    defaults: {
-      maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.15,
-      humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3,
-    },
-  }
-  const home = process.env.HOME
-  if (!home) return fallback
-  let profile
-  try {
-    profile = readFileSync(join(home, ".dsh/profiles/desktop/cordis.patch.yml"), "utf8")
-  } catch {
-    return fallback
-  }
-  const block = profile.slice(profile.indexOf("    - id: decision-orchestrator"))
-  const num = (name, fb) => {
-    const m = new RegExp(`^\\s*${name}:\\s*([\\d.]+)\\s*$`, "m").exec(block)
-    return m ? Number(m[1]) : fb
-  }
-  const str = (name, fb) => {
-    const m = new RegExp(`^\\s*${name}:\\s*(.+?)\\s*$`, "m").exec(block)
-    return m ? m[1] : fb
-  }
-  return {
-    model: {
-      baseUrl: str("baseUrl", fallback.model.baseUrl),
-      name: str("name", fallback.model.name),
-      timeoutMs: num("timeoutMs", fallback.model.timeoutMs),
-    },
-    defaults: {
-      maxIterations: num("maxIterations", fallback.defaults.maxIterations),
-      failureRetryLimit: num("failureRetryLimit", fallback.defaults.failureRetryLimit),
-      confidenceFloor: num("confidenceFloor", fallback.defaults.confidenceFloor),
-      humanCooldownMs: num("humanCooldownMs", fallback.defaults.humanCooldownMs),
-      quietWindowMs: num("quietWindowMs", fallback.defaults.quietWindowMs),
-      contextBudgetRatio: num("contextBudgetRatio", fallback.defaults.contextBudgetRatio),
-      maxTurns: num("maxTurns", fallback.defaults.maxTurns),
-    },
-  }
-}
+/** A message from the agent. */
+const AGENT = (text) => ({
+  role: "assistant",
+  source: { kind: "model" },
+  content: [{ type: "text", text }],
+  time: Date.now() - 5000,
+})
 
-const workspace = loadFixture()
-const tunables = loadTunables()
-const WS = workspace.path
-const config = {
-  model: tunables.model,
-  defaults: tunables.defaults,
-  workspaces: [workspace],
-}
-
-/**
- * One conversation: the user's opening message, whatever the plugin and agent
- * exchanged, then the reply being judged.
- *
- * Chronological, and the opening message is the caller's — a conflict scenario
- * does not start with a feature request, and padding it with one leaves the
- * model reading two unrelated threads.
- */
-function mkSession(text, prior = [], opening = "先把 worktree 同步到最新 head，然后评估需求：加一个导出功能") {
-  const now = Date.now()
-  return {
-    id: "session-e2e-0001",
-    header: { cwd: WS },
-    deriveMessages: () => [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: opening }], time: now - 600000 },
-      ...prior,
-      { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text }], time: now - 5000 },
-    ],
-  }
+function mkSession(messages) {
+  return { id: "session-e2e", header: { cwd: WS }, deriveMessages: () => messages }
 }
 
 function mkAgent(session) {
   const sent = []
-  return { sent, session, inbox: { nextTurn: [], nextStep: [] }, followup(m) { sent.push(m) }, whenIdle: async () => {} }
+  return {
+    sent,
+    session,
+    inbox: { nextTurn: [], nextStep: [] },
+    followup(msg) { sent.push(msg) },
+    whenIdle: async () => {},
+  }
 }
 
 function mkCtx() {
+  return { sessions: { flush: async () => true }, get: () => undefined }
+}
+
+/** Turn arbitration off so the pipeline itself is what is being measured. */
+function fastConfig() {
   return {
-    sessions: { flush: async () => true },
-    goals: { get: () => undefined },
-    get: (k) => (k === "tokenMeter" ? { estimateMessage: () => 20 } : undefined),
+    ...fixtureConfig,
+    defaults: { ...fixtureConfig.defaults, humanCooldownMs: 0, quietWindowMs: 0, maxIterations: 100 },
   }
 }
 
-const CASES = [
-  {
-    label: "bug 刚排查完",
-    text: "我怀疑是 token 过期导致的，要去 console 看一下。",
-    prior: [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "报告bug：登录后白屏" }], time: Date.now() - 600000 }],
-    expect: "bug_root",
-  },
-  {
-    label: "需求刚给方案",
-    text: "方案：改 3 个文件，导出处加一个 csv 库，导出范围是当前列表。",
-    expect: "review",
-  },
-  {
-    label: "评审完（没汇总）",
-    text: "评审完成，影响 3 处，架构上不需要额外抽象。",
-    prior: [PLUGIN("review")],
-    expect: "summarize",
-  },
-  {
-    label: "汇总完（等开干）",
-    text: "1. 改 export.ts 2. 加 csv 依赖 3. 加测试",
-    prior: [PLUGIN("review"), PLUGIN("summarize")],
-    expect: "confirm",
-  },
-  {
-    label: "开干后改完",
-    text: "代码改完了，改了 3 个文件，功能已实现。",
-    prior: [
-    ],
-    opening: "开干",
-    expect: "selfcheck_1",
-  },
-  {
-    label: "第一轮自检完",
-    text: "发现 2 处越界改动，已修正；还加了一个边界测试。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_2",
-  },
-  {
-    label: "第二轮完·仍有问题",
-    text: "又发现 1 处问题，边界条件没处理，已修复。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_3",
-  },
-  {
-    label: "第二轮完成·没问题",
-    text: "全部检查通过，TS 和 lint 都是 0 error，没发现遗留问题。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-    ],
-    opening: "开干",
-    expect: "push",
-  },
-  {
-    label: "第三轮答复后",
-    text: "还需要，重点应该放在边界条件上。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-      PLUGIN("selfcheck_3"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_go",
-  },
-  {
-    label: "已推送",
-    text: "已推送，HEAD -> main，工作树干净。",
-    opening: "开干",
-    expect: "finished",
-  },
-  {
-    label: "agent 提问等你回答",
-    text: "导出成 CSV 还是 Excel？范围是当前列表还是全部？",
-    expect: "waiting",
-  },
-  {
-    // The third round is spent, so the model's answer is the same situation one
-    // round earlier. The fallback is what keeps the pipeline moving here.
-    label: "第三轮后·说不用也继续",
-    text: "我觉得不需要再做自检了，代码已经足够干净。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-      PLUGIN("selfcheck_3"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_go",
-  },
-  {
-    // Every reply after the third round must lead to the same place. The
-    // earlier criteria read the wording and split on it.
-    label: "第三轮后·简短说要",
-    text: "是的，还需要。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-      PLUGIN("selfcheck_3"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_go",
-  },
-  {
-    label: "第三轮后·简短说不用",
-    text: "不需要了。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-      PLUGIN("selfcheck_3"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_go",
-  },
-  {
-    label: "第三轮后·说可以了",
-    text: "可以了，没问题。",
-    prior: [
-      PLUGIN("selfcheck_1"),
-      PLUGIN("selfcheck_2"),
-      PLUGIN("selfcheck_3"),
-    ],
-    opening: "开干",
-    expect: "selfcheck_go",
-  },
-  {
-    // The user asked a question and said so. Nothing should be sent.
-    label: "纯提问·不该发 review",
-    text: "我查了一下，没有这个开关。字幕是渲染时硬编码的，没有用户可关的选项。",
-    opening: "看下 video 页面里有没有让用户关闭字幕效果的开关。我是在问你问题，没让你改代码",
-    expect: "NOT:review",
-  },
-  {
-    // The user typed the review prompt by hand. It is not a plugin message, so
-    // it must not be read as one — that is what fired summarize out of nowhere
-    // in a real session.
-    label: "用户手打 prompt·不该 summarize",
-    text: "我看了一下，可以从构建态源码解决。影响 2 处。",
-    prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "该读的文档和代码都去读。二次确认下是否评估全了，是否会带来其他逻辑的影响？" }], time: Date.now() - 200000 },
-    ],
-    opening: "远端代码有更新，你更新worktree后再看看能否被逆向出来这些字幕的原始来源",
-    expect: "NOT:summarize",
-  },
-  {
-    label: "冲突·确认为真→回评审",
-    text: "确实有冲突，auth.ts 和 router.ts 两处，我手动合并了。",
-    prior: [PLUGIN("conflict")],
-    opening: "同步到最新 head",
-    expect: "review",
-  },
-  {
-    label: "冲突·确认没冲突",
-    text: "没有冲突，直接 fast-forward 了。",
-    prior: [PLUGIN("conflict")],
-    opening: "同步到最新 head",
-    expect: "waiting",
-  },
-  {
-    label: "有冲突",
-    text: "rebase 时 auth.ts 和 router.ts 有冲突，已手动合并两处。",
-    opening: "同步到最新 head",
-    expect: "conflict",
-  },
-]
+console.log("=== 0. The fixture is the configuration that ships ===")
 
-// The fixture is only authoritative if the running profile agrees with it. When
-// one is edited without the other, every assertion below passes against a
-// configuration nobody deploys — which is exactly the drift this arrangement
-// exists to prevent.
 /**
- * Read one scalar field out of a YAML block, joining folded continuation lines.
- *
- * A block scalar may be wrapped across several indented lines; the value is the
- * join of them. Stopping at the first line would compare a truncated string.
+ * The fixture is only authoritative if the deployed profile agrees with it.
+ * When one is edited without the other, every assertion below passes against a
+ * configuration nobody deploys.
  */
-function yamlScalar(block, field) {
-  const lines = block.split("\n")
-  const startIdx = lines.findIndex((l) => new RegExp(`^\\s*${field}:`).test(l))
-  if (startIdx < 0) return ""
-  const first = lines[startIdx].replace(new RegExp(`^\\s*${field}:\\s*`), "")
-  const parts = [first]
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    const l = lines[i]
-    // A new `key:` at the same or lower indent ends the value.
-    if (/^\s*[a-zA-Z]+:/.test(l) || l.trim() === "") break
-    parts.push(l.trim())
-  }
-  return parts.join(" ").trim()
-}
-
 function checkProfileMatches() {
   const home = process.env.HOME
   if (!home) return "HOME is unset; skipped"
-  const profilePath = join(home, ".dsh/profiles/desktop/cordis.patch.yml")
-  let profile
+  let profileText
   try {
-    profile = readFileSync(profilePath, "utf8")
+    profileText = readFileSync(join(home, ".dsh/profiles/desktop/cordis.patch.yml"), "utf8")
   } catch {
-    return "no deployed profile on this machine; skipped"
+    return "no profile; skipped"
   }
-  const start = profile.indexOf("        workspaces:")
-  assert(start > 0, "the deployed profile has no workspaces block")
-  const end = profile.indexOf("\n\n- id:", start)
-  const deployed = profile.slice(start, end > 0 ? end : undefined)
+  // Pull the workspaces block out of the profile and run it through the same
+  // validator, rather than comparing text: the profile is indented differently
+  // and carries keys the fixture does not.
+  const at = profileText.indexOf("- id: decision-orchestrator")
+  if (at < 0) return "plugin not in profile; skipped"
+  const chunk = profileText.slice(at)
+  const wsAt = chunk.indexOf("workspaces:")
+  if (wsAt < 0) return "no workspaces in profile; skipped"
+  // Take the lines from `workspaces:` to the next top-level entry.
+  const tail = chunk.slice(wsAt - 8).split("\n")
+  const body = []
+  for (const line of tail) {
+    if (body.length > 0 && line.trim() && !line.startsWith(" ") && !line.startsWith("-")) break
+    body.push(line)
+  }
+  const parsed = parseYamlFragment(body.join("\n"))
+  const r = validate({ workspaces: parsed.workspaces })
+  if (r.issues) return `profile does not validate: ${r.issues[0].message}`
+  const deployed = r.value.workspaces[0]
 
-  const ids = (text) => text.split(/^\s*- id:\s*/m).slice(1).map((c) => c.split("\n")[0].trim())
-  const deployedIds = ids(deployed)
-  const fixtureIds = workspace.decisions.map((d) => d.id)
-  assert(
-    deployedIds.join(",") === fixtureIds.join(","),
-    `decision points differ\n  deployed: ${deployedIds.join(",")}\n  fixture:  ${fixtureIds.join(",")}`,
-  )
-
-  // Compare every field, not just the id list. Matching ids with drifted prose
-  // would leave the model reading criteria that were never tested, and a
-  // drifted prompt would send text nobody reviewed.
-  //
-  // Values are read as whole blocks rather than line by line: YAML folds a long
-  // scalar across several indented lines, and a per-line match reports the
-  // first line as a mismatch against the whole value.
-  const blocks = deployed.split(/^\s*- id:\s*/m).slice(1)
-  for (const [i, d] of workspace.decisions.entries()) {
-    const block = blocks[i]
-    assert(block, `decision ${d.id} is missing from the profile`)
-    for (const field of ["when", "do", "prompt", "notifyText"]) {
-      const deployedValue = yamlScalar(block, field)
-      const fixtureValue = d[field] ?? ""
-      assert(
-        deployedValue === fixtureValue,
-        `decision ${d.id} ${field} differs\n  deployed: ${deployedValue}\n  fixture:  ${fixtureValue}`,
-      )
+  const problems = []
+  const fixtureSteps = workspace.steps
+  const deployedSteps = deployed.steps
+  const keys = Object.keys(fixtureSteps)
+  if (keys.length !== Object.keys(deployedSteps).length) {
+    problems.push(`step count differs: fixture ${keys.length}, deployed ${Object.keys(deployedSteps).length}`)
+  }
+  for (const [id, step] of Object.entries(fixtureSteps)) {
+    const other = deployedSteps[id]
+    if (!other) { problems.push(`step ${id} is missing from the profile`); continue }
+    for (const field of ["do", "prompt", "notifyText", "expect", "question"]) {
+      if ((step[field] ?? "") !== (other[field] ?? "")) {
+        problems.push(`step ${id}.${field} differs`)
+      }
+    }
+    if (JSON.stringify(step.options ?? {}) !== JSON.stringify(other.options ?? {})) {
+      problems.push(`step ${id}.options differs`)
     }
   }
-  return `matches ${deployedIds.length} decision points across every field`
+  for (const [name, flow] of Object.entries(workspace.flows)) {
+    const other = deployed.flows[name]
+    if (!other) { problems.push(`flow ${name} is missing from the profile`); continue }
+    if (flow.steps.join(",") !== other.steps.join(",")) problems.push(`flow ${name}.steps differs`)
+  }
+  return problems.length ? problems.join("; ") : ""
 }
 
-console.log("=== 部署配置与 fixture 一致 ===")
-try {
-  console.log("  " + checkProfileMatches())
-} catch (e) {
-  console.log("  ❌ " + e.message)
-  process.exit(1)
+{
+  const problem = checkProfileMatches()
+  if (problem) {
+    console.log(`  ${problem.startsWith("skipped") || problem.includes("skipped") ? "⚠️ " : "❌"} ${problem}`)
+    if (!problem.includes("skipped")) process.exitCode = 1
+  } else {
+    console.log("  ✅ the deployed profile matches the fixture")
+  }
 }
-console.log()
+
+console.log("\n=== 1. The pipeline advances without the model ===")
+
+/**
+ * Walk a flow from the start, feeding back each message the plugin sends, and
+ * record the sequence of steps it fired.
+ *
+ * @param {string} flowName
+ * @param {Array} opening messages before the flow starts
+ * @param {object} opts
+ * @param {number} [opts.turns] how many turn-ends to simulate
+ * @param {(turn: object, state: object) => void} [opts.onHalt] hook after a halt
+ */
+async function walk(flowName, opening, { turns = 6, onHalt, settled = true } = {}) {
+  let state = {}
+  const mutate = (next) => { state = next }
+  // Share the array with the caller so onHalt can append to it.
+  const messages = opening
+  const fired = []
+  beginFlow({ flowName, cfg: effectiveConfig(fastConfig(), WS), rt: state, mutate })
+  const agent = mkAgent(mkSession(messages))
+  for (let n = 0; n < turns; n++) {
+    messages.push(AGENT("我处理完了。"))
+    const r = await handleTurnEnd({
+      ctx: mkCtx(),
+      agent,
+      session: mkSession(messages),
+      turnEnd: { turn: n + 1, reason: { kind: "completed" } },
+      config: fastConfig(),
+      state,
+      mutate,
+      queue: { run: (fn) => fn() },
+    })
+    if (r.action === "send") {
+      fired.push(r.ruleId)
+      messages.push(PLUGIN(r.ruleId))
+    } else {
+      onHalt?.(r, state)
+      if (r.action !== "halt" && r.action !== "branch") break
+      if (r.action === "branch") console.log(`      branch → ${r.target}`)
+    }
+  }
+  return { fired, state, messages }
+}
 
 let ok = 0
-console.log("=== 真实 Kev：12 条决策点端到端 ===")
-for (const c of CASES) {
-  const session = mkSession(c.text, c.prior ?? [], c.opening)
-  const agent = mkAgent(session)
-  const t0 = Date.now()
-  let r
-  try {
-    r = await handleTurnEnd({
-      ctx: mkCtx(), agent, session,
-      turnEnd: { turn: 1, reason: { kind: "completed" } },
-      config, state: {}, mutate: () => {}, queue: { run: (fn) => fn() },
-    })
-  } catch (e) {
-    r = { action: "throw", error: e.message }
-  }
-  const ms = Date.now() - t0
-  const got = r.ruleId ?? r.skipped ?? "-"
-  const negate = c.expect.startsWith("NOT:")
-  const want = negate ? c.expect.slice(4) : c.expect
-  const hit = negate ? got !== want : got === want
-  if (hit) ok++
-  console.log(`  ${hit ? "✅" : "❌"} ${c.label.padEnd(20)} want=${c.expect.padEnd(16)} got=${String(got).padEnd(12)} ${String(r.action ?? "skip").padEnd(7)} ${ms}ms`)
+let total = 0
+const check = (label, cond, detail) => {
+  total++
+  if (cond) { ok++; console.log(`  ✅ ${label}`) } else { console.log(`  ❌ ${label} — ${detail}`) }
 }
 
-console.log(`\n=== ${ok}/${CASES.length} ===`)
-process.exit(ok === CASES.length ? 0 : 1)
+{
+  const { fired } = await walk("requirement", [HUMAN("评估如下需求，仅评估不要动仓库：加导出")], { turns: 3 })
+  check("the requirement flow opens with review then summarize",
+    fired.join(",") === "review,summarize", `got ${fired.join(",")}`)
+}
+
+{
+  const { fired } = await walk("bug", [HUMAN("报告bug，你彻底排查根因，不要动仓库：按钮位置不对")], { turns: 4 })
+  check("the bug flow opens with the root-cause question",
+    fired.join(",") === "bug_root,review,summarize", `got ${fired.join(",")}`)
+}
+
+{
+  const { fired } = await walk("conflict", [HUMAN("同步到最新 head")], { turns: 4 })
+  check("the conflict flow opens with the conflict question",
+    fired.join(",") === "conflict,review,summarize", `got ${fired.join(",")}`)
+}
+
+{
+  // confirm is a stop: the flow must hold there and send nothing after it.
+  const { fired } = await walk("requirement", [HUMAN("评估需求")], { turns: 6 })
+  check("the flow holds at confirm instead of running on",
+    fired.join(",") === "review,summarize", `got ${fired.join(",")}`)
+}
+
+{
+  // The single turn that reaches the stop must record it, not run past it.
+  // Three sends bring the flow to confirm: review, summarize, then the stop.
+  const { fired, state } = await walk(
+    "requirement",
+    [HUMAN("评估需求"), PLUGIN("review"), AGENT("方案如下。"), PLUGIN("summarize"), AGENT("1. 改 a.ts")],
+    { turns: 1 },
+  )
+  check("the turn that reaches the stop pauses there", state.awaitingRuleId === "confirm",
+    `awaiting=${state.awaitingRuleId}, fired=${fired.join(",")}`)
+}
+
+{
+  // The user says something that is not the phrase: still held.
+  const { fired } = await walk("requirement", [
+    HUMAN("评估需求"),
+    PLUGIN("review"),
+    AGENT("方案如下。"),
+    PLUGIN("summarize"),
+    AGENT("1. 改 a.ts"),
+    HUMAN("待定事项按你认为合理的来"),
+  ], { turns: 2 })
+  check("a reply that is not the go phrase keeps the flow parked",
+    fired.join(",") === "", `got ${fired.join(",")}`)
+}
+
+{
+  // The phrase has to be written after the flow reaches the wait step — an
+  // earlier "go" belonged to a previous task and must not satisfy this one.
+  // walk() feeds messages back with fresh timestamps, so the hook below adds
+  // the phrase at the moment the flow pauses on it.
+  const opening = [
+    HUMAN("评估需求", 400000),
+    PLUGIN("review"),
+    AGENT("方案如下。"),
+    PLUGIN("summarize"),
+    AGENT("1. 改 a.ts"),
+    HUMAN("待定事项按你认为合理的来"),
+  ]
+  let saidGo = false
+  const { fired } = await walk("requirement", opening, {
+    turns: 4,
+    onHalt: (r) => {
+      if (r.ruleId === "start_work" && !saidGo) {
+        saidGo = true
+        opening.push(HUMAN("开干。注释按 agents.md 的规范来", 0))
+      }
+    },
+  })
+  check("saying the go phrase resumes the flow", fired.includes("selfcheck_1"), `got ${fired.join(",")}`)
+}
+
+console.log("\n=== 2. The branch decides direction ===")
+
+/**
+ * Put a flow on its branch and ask the model which way to go.
+ *
+ * @param {string} flowName
+ * @param {Array} opening messages that lead up to the branch
+ * @param {string} reply the agent's answer to the second self-check
+ */
+async function atBranch(flowName, opening, reply) {
+  const flow = workspace.flows[flowName]
+  const branchAt = flow.steps.indexOf("selfcheck_branch")
+  const sent = flow.steps.slice(0, branchAt).filter((id) => workspace.steps[id].do === "send")
+  const passed = flow.steps.slice(0, branchAt).filter((id) => {
+    const kind = workspace.steps[id].do
+    return kind === "stop" || kind === "wait-user"
+  })
+  const messages = [...opening, ...sent.map((id) => PLUGIN(id)), AGENT(reply)]
+  const state = {
+    flow: { name: flowName, status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed, note: "" },
+  }
+  const agent = mkAgent(mkSession(messages))
+  const r = await handleTurnEnd({
+    ctx: mkCtx(),
+    agent,
+    session: mkSession(messages),
+    turnEnd: { turn: 1, reason: { kind: "completed" } },
+    config: fastConfig(),
+    state,
+    mutate: () => {},
+    queue: { run: (fn) => fn() },
+  })
+  return r
+}
+
+const BRANCH_CASES = [
+  {
+    label: "clean self-check → push",
+    reply: "TS + lint + build 全部 0 error 0 warning。没有越界改动，注释和文档符合核范。没有遗留问题。",
+    want: "push",
+  },
+  {
+    label: "problems remain → another round",
+    reply: "发现 3 处问题：a.ts 有个未处理的分支，b.ts 的类型是 any，还有两处注释没按核范写。我会继续修。",
+    want: "selfcheck_3",
+  },
+  {
+    label: "problems fixed this round but more remain → another round",
+    reply: "这一轮修了 2 处，但还剩 1 处没处理完：c.ts 的边界情况我还没想清楚。",
+    want: "selfcheck_3",
+  },
+]
+
+for (const c of BRANCH_CASES) {
+  const r = await atBranch("requirement", [HUMAN("评估需求")], c.reply)
+  const got = r.target ?? r.skipped ?? r.action ?? "-"
+  const hit = got === c.want
+  if (hit) ok++
+  total++
+  const conf = typeof r.confidence === "number" ? `${(r.confidence * 100).toFixed(0)}%` : "-"
+  console.log(`  ${hit ? "✅" : "❌"} ${c.label.padEnd(44)} want=${c.want.padEnd(13)} got=${String(got).padEnd(13)} ${conf}`)
+}
+
+console.log("\n=== 3. The flow is a stop, not a loop ===")
+
+{
+  // Every flow must come to rest: a send that keeps firing would be a cursor
+  // bug that only shows up after many turns.
+  const { fired } = await walk("requirement", [HUMAN("评估需求")], { turns: 12 })
+  const dup = fired.filter((id, i) => fired.indexOf(id) !== i)
+  check("no step fires twice within one flow", dup.length === 0, `repeats: ${dup.join(",")}`)
+  check("the walk comes to rest instead of looping", fired.length <= 10, `fired ${fired.length} steps: ${fired.join(",")}`)
+}
+
+console.log(`\n=== ${ok}/${total} ===`)
+process.exit(ok === total && !process.exitCode ? 0 : 1)

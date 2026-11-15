@@ -28,8 +28,8 @@ const suites = [
   ["apply.mjs", "apply() wiring (projection registration and schemas)"],
   ["context.mjs", "Context budget and last-message priority"],
   ["confidence.mjs", "Confidence (raw p_max) and the uncertain path"],
-  ["decisions.mjs", "Decision points: contract, question, validation"],
-  ["progress.mjs", "Progress derivation, idempotency, serial queue"],
+  ["flow-spec.mjs", "Flow spec: steps, flows, what validation rejects"],
+  ["flow-machine.mjs", "Flow machine: advance, branch, pause, replay from the log"],
   ["flow.mjs", "Main loop branches (fake ctx, never the real host)"],
   ["e2e-kev.mjs", "Live model end-to-end", !fast],
 ]

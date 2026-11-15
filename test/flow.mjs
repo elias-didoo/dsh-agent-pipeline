@@ -40,12 +40,16 @@ function makeConfig(overrides = {}) {
     workspaces: [{
       path: WS,
       enabled: true,
-      decisions: [
-        { id: "selfcheck_1", when: "用户刚说开干，agent 已改完代码，插件还没发过自检要求", do: "send", prompt: "请继续。", notifyText: "" },
-        { id: "selfcheck_2", when: "插件发过第一轮自检，agent 已回复检查结果", do: "send", prompt: "继续第二轮。", notifyText: "" },
-        { id: "needs_user_input", when: "agent 在正文里直接向用户提问、请求批准或索要信息", do: "stop", prompt: "", notifyText: "需要你拍板" },
-        { id: "finished", when: "agent 已推送完成，或明确宣告需求全部结束", do: "stop", prompt: "", notifyText: "已完成" },
-      ],
+      steps: {
+        selfcheck_1: { id: "selfcheck_1", do: "send", prompt: "请继续。" },
+        selfcheck_2: { id: "selfcheck_2", do: "send", prompt: "继续第二轮。" },
+        needs_user_input: { id: "needs_user_input", do: "stop", notifyText: "需要你拍板" },
+        finished: { id: "finished", do: "stop", notifyText: "已完成" },
+      },
+      flows: {
+        demo: { label: { en: "Demo", zh: "演示" }, steps: ["selfcheck_1", "selfcheck_2", "needs_user_input"] },
+        done: { label: { en: "Done", zh: "完成" }, steps: ["finished"] },
+      },
     }],
   }
 }
@@ -94,6 +98,20 @@ function baseMessages(text = "我在继续做，接下来写 API 部分。") {
   ]
 }
 
+/**
+ * A projection state with the demo flow already started.
+ *
+ * The main loop does nothing without a flow, so every test that expects an
+ * action starts one. `passed` records the silent steps it has already crossed;
+ * `since` is when it arrived at the current one.
+ */
+function startedState(extra = {}) {
+  return {
+    flow: { name: "demo", status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed: [], note: "" },
+    ...extra,
+  }
+}
+
 const turnEnd = (kind = "completed") => ({
   turn: 1,
   reason: kind === "error" ? { kind: "error", error: { code: "TRANSPORT" } } : { kind },
@@ -104,7 +122,7 @@ await t("workspace not in config → not-enabled", async () => {
   const agent = makeAgent()
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ cwd: "/tmp/other" }),
-    turnEnd: turnEnd(), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "not-enabled", `actual: ${JSON.stringify(r)}`)
 })
@@ -114,7 +132,7 @@ await t("workspace with enabled:false → not-enabled", async () => {
   cfg.workspaces[0].enabled = false
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent: makeAgent(), session: makeSession(),
-    turnEnd: turnEnd(), config: cfg, state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: cfg, state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "not-enabled", `actual: ${JSON.stringify(r)}`)
 })
@@ -125,7 +143,7 @@ for (const kind of ["aborted", "interrupted"]) {
     const agent = makeAgent()
     const r = await handleTurnEnd({
       ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
-      turnEnd: turnEnd(kind), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+      turnEnd: turnEnd(kind), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
     })
     assert(r.skipped === kind, `actual: ${JSON.stringify(r)}`)
     assert(agent.sent.length === 0, "must not send")
@@ -138,7 +156,7 @@ await t("goal active+armed → silent", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx({ goal: { phase: "active", activation: "armed" } }), agent,
     session: makeSession({ messages: baseMessages() }),
-    turnEnd: turnEnd(), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "goal-active", `actual: ${JSON.stringify(r)}`)
   assert(agent.sent.length === 0, "must not send")
@@ -152,7 +170,7 @@ await t("human spoke recently → cooling down", async () => {
   const agent = makeAgent()
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: msgs }),
-    turnEnd: turnEnd(), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "human-cooldown", `actual: ${JSON.stringify(r)}`)
 })
@@ -161,7 +179,7 @@ await t("a human message is queued in the inbox → wait", async () => {
   const agent = makeAgent({ inbox: [{ role: "user", source: { kind: "user" }, content: [] }] })
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
-    turnEnd: turnEnd(), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "human-waiting", `actual: ${JSON.stringify(r)}`)
 })
@@ -175,7 +193,7 @@ await t("another agent just relayed → yield", async () => {
   ]
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent: makeAgent(), session: makeSession({ messages: msgs }),
-    turnEnd: turnEnd(), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "agent-message", `actual: ${JSON.stringify(r)}`)
 })
@@ -190,7 +208,7 @@ await t("a schedule targets this session → schedule-pending", async () => {
   }
   const r = await handleTurnEnd({
     ctx, agent, session, turnEnd: turnEnd(), config: makeConfig(),
-    state: {}, mutate: () => {}, queue: makeQueue(),
+    state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "schedule-pending", `actual: ${JSON.stringify(r)}`)
   assert(agent.sent.length === 0, "must not send")
@@ -205,7 +223,7 @@ await t("a schedule targeting another session → pass through", async () => {
   }
   const r = await handleTurnEnd({
     ctx, agent, session, turnEnd: turnEnd(), config: makeConfig(),
-    state: {}, mutate: () => {}, queue: makeQueue(),
+    state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped !== "schedule-pending", `should not be blocked by schedule: ${JSON.stringify(r)}`)
 })
@@ -219,7 +237,7 @@ await t("active but not yet due → not silenced (a next-week run must not block
   }
   const r = await handleTurnEnd({
     ctx, agent, session, turnEnd: turnEnd(), config: makeConfig(),
-    state: {}, mutate: () => {}, queue: makeQueue(),
+    state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped !== "schedule-pending", `should not be silenced: ${JSON.stringify(r)}`)
 })
@@ -231,7 +249,7 @@ await t("schedule.list throws → treated as none, never blocks", async () => {
   ctx.schedule = { list: async () => { throw new Error("boom") } }
   const r = await handleTurnEnd({
     ctx, agent, session, turnEnd: turnEnd(), config: makeConfig(),
-    state: {}, mutate: () => {}, queue: makeQueue(),
+    state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped !== "schedule-pending", `an exception must not block: ${JSON.stringify(r)}`)
 })
@@ -242,7 +260,7 @@ await t("no schedule service → never blocks", async () => {
   const ctx = makeCtx() // no schedule service
   const r = await handleTurnEnd({
     ctx, agent, session, turnEnd: turnEnd(), config: makeConfig(),
-    state: {}, mutate: () => {}, queue: makeQueue(),
+    state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped !== "schedule-pending", `actual: ${JSON.stringify(r)}`)
 })
@@ -253,7 +271,7 @@ await t("stoppedReason set → no further action", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: makeConfig(),
-    state: { stoppedReason: "failure-limit:3" }, mutate: () => {}, queue: makeQueue(),
+    state: startedState({ stoppedReason: "failure-limit:3" }), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped?.includes("stopped"), `actual: ${JSON.stringify(r)}`)
 })
@@ -264,7 +282,7 @@ await t("paused and the user has not spoken → stays quiet", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: makeConfig(),
-    state: { awaitingRuleId: "needs_user_input" }, mutate: () => {}, queue: makeQueue(),
+    state: startedState({ awaitingRuleId: "needs_user_input" }), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "awaiting-user", `actual: ${JSON.stringify(r)}`)
 })
@@ -275,7 +293,7 @@ await t("an already-paused session stays paused", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: makeConfig(),
-    state: { awaitingRuleId: "uncertain" }, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: startedState({ awaitingRuleId: "uncertain" }), mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.skipped === "awaiting-user", `actual: ${JSON.stringify(r)}`)
   // A held-back turn must not rewrite state, or it would churn the projection.
@@ -292,7 +310,7 @@ await t("paused but the user has spoken → unpause and continue", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: msgs }),
     turnEnd: turnEnd(), config: makeConfig(),
-    state: { awaitingRuleId: "needs_user_input" }, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: startedState({ awaitingRuleId: "needs_user_input" }), mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   // After unpausing, judging continues. The model reads a vague reply its own
   // way and the call itself can fail, so the assertion is on the invariant
@@ -324,7 +342,7 @@ await t("an action=stop rule → no message, only the paused state", async () =>
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: msgs }),
     turnEnd: turnEnd(), config: makeConfig(),
-    state: {}, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: startedState(), mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   // When an action=stop rule fires the return value is `halt` — the config enum
   // `stop` and the runtime outcome `halt` are two different layers.
@@ -344,49 +362,66 @@ await t("iterations hit the cap → stop", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: makeConfig(),
-    state: { iterations: 20 }, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: startedState({ iterations: 20 }), mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.action === "stopped", `actual: ${JSON.stringify(r)}`)
   assert(mutated?.stoppedReason?.includes("iteration-limit"), "should record a stop reason")
 })
 
-console.log("\n=== 5c. Each decision point fires at most once ===")
-await t("the same state repeatedly triggered never resends the same prompt", async () => {
-  // pickRule advances by byRuleId, and a send rule is never returned again
-  // once fired — so the same prompt cannot go out twice.
+console.log("\n=== 5c. A flow advances, never repeats ===")
+await t("walking the flow sends each step once and then lands on the stop", async () => {
+  // The cursor is recomputed from the transcript every turn, so re-entering the
+  // same turn cannot re-send a prompt whose message is already there.
   const agent = makeAgent()
-  const ruleIds = []
-  let state = {}
-  // Use explicit self-check text so the run really enters selfchecking and
-  // actually fires a rule.
-  let msgs = baseMessages("TS/lint/build 全部 0 error。自查发现 3 处越界，已修正。")
-  // Simulate the real loop: append each sent message to the stream as a plugin
-  // message.
+  const sentIds = []
+  let state = startedState({ flow: { name: "demo", status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed: [], note: "" } })
+  let msgs = baseMessages()
   for (let i = 0; i < 4; i++) {
     const r = await handleTurnEnd({
-      ctx: makeCtx(), agent,
-      session: makeSession({ messages: msgs }),
-      turnEnd: turnEnd(), config: makeConfig({ maxIterations: 100 }),
+      ctx: makeCtx(), agent, session: makeSession({ messages: msgs }),
+      turnEnd: turnEnd(), config: makeConfig({ maxIterations: 100, humanCooldownMs: 0, quietWindowMs: 0 }),
       state, mutate: (n) => { state = n }, queue: makeQueue(),
     })
     if (r.action === "send") {
-      ruleIds.push(r.ruleId)
+      sentIds.push(r.ruleId)
       msgs = [...msgs, { role: "user", source: { kind: "decision", ruleId: r.ruleId }, content: [{ type: "text", text: "x" }], time: Date.now() - 1000 }]
     } else {
       break
     }
   }
-  assert(ruleIds.length > 0, "should send at least once, otherwise dedupe is untested")
-  const dup = ruleIds.filter((id, i) => ruleIds.indexOf(id) !== i)
-  assert(dup.length === 0, `the same rule must not send twice, got ${JSON.stringify(ruleIds)}`)
+  assert(sentIds.join(",") === "selfcheck_1,selfcheck_2", `expected the two sends in order, got ${sentIds.join(",")}`)
 })
 
 console.log("\n=== 6. Empty input ===")
-await t("no readable messages → empty-input", async () => {
+await t("a send needs no transcript, so an empty one still advances", async () => {
+  // Only a branch reads the conversation. A send is a fixed message; refusing
+  // it because the transcript is unreadable would stall a pipeline for no
+  // reason.
   const agent = makeAgent()
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: [] }),
-    turnEnd: turnEnd(), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd(), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
+  })
+  assert(r.action === "send", `actual: ${JSON.stringify(r)}`)
+})
+
+await t("empty input at a branch → empty-input", async () => {
+  const agent = makeAgent()
+  const state = startedState({
+    flow: { name: "demo", status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed: [], note: "" },
+  })
+  // Force the cursor onto a branch step: the demo flow's first two are sends.
+  state.flow.passed = ["selfcheck_1", "selfcheck_2", "needs_user_input"]
+  const cfg = makeConfig()
+  cfg.workspaces[0].steps.branchy = { do: "branch", question: "q", options: { a: "finished", b: "selfcheck_1" } }
+  cfg.workspaces[0].flows.branchy = { label: { en: "B" }, steps: ["branchy", "finished"] }
+  const r = await handleTurnEnd({
+    ctx: makeCtx(), agent, session: makeSession({ messages: [] }),
+    turnEnd: turnEnd(), config: cfg,
+    state: {
+      flow: { name: "branchy", status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed: [], note: "" },
+    },
+    mutate: () => {}, queue: makeQueue(),
   })
   assert(r.skipped === "empty-input", `actual: ${JSON.stringify(r)}`)
 })
@@ -396,7 +431,7 @@ await t("TRANSPORT under the limit → resend", async () => {
   const agent = makeAgent()
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
-    turnEnd: turnEnd("error"), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd("error"), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.action === "retry", `actual: ${JSON.stringify(r)}`)
   assert(agent.sent.length === 1, "should send exactly one retry message")
@@ -410,7 +445,7 @@ await t("over the limit → stop", async () => {
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd("error"), config: makeConfig(),
-    state: { failures: 3 }, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: startedState({ failures: 3 }), mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.action === "stopped", `actual: ${JSON.stringify(r)}`)
   assert(String(mutated?.stoppedReason).startsWith("failure-limit"), `should record failure-limit, got ${mutated?.stoppedReason}`)
@@ -430,7 +465,7 @@ await t("iterations only grow: the session stops at the cap", async () => {
     ctx: makeCtx(), agent,
     session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: makeConfig({ maxIterations: 2 }),
-    state: { iterations: 2 }, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: startedState({ iterations: 2 }), mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.action === "stopped", `should stop, got ${JSON.stringify(r)}`)
   assert(r.reason === "iteration-limit", `reason should be iteration-limit, got ${r.reason}`)
@@ -454,10 +489,18 @@ await t("model unreachable and over the limit → stops with stoppedReason + log
   const logPath = pjoin(process.env.DECISION_ORCHESTRATOR_LOG_DIR, `${ymd}.jsonl`)
   const before = existsSync(logPath) ? readFileSync(logPath, "utf8").trim().split("\n").length : 0
 
+  // Only a branch calls the model now, so the flow is parked on one. A send
+  // never reaches the model and therefore can never fail this way.
+  cfg.workspaces[0].steps.ask = { do: "branch", question: "q", options: { a: "finished", b: "finished" } }
+  cfg.workspaces[0].flows.ask = { label: { en: "Ask" }, steps: ["ask", "finished"] }
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: cfg,
-    state: { failures: 5 }, mutate: (n) => { mutated = n }, queue: makeQueue(),
+    state: {
+      failures: 5,
+      flow: { name: "ask", status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed: [], note: "" },
+    },
+    mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.action === "stopped", `should stop, got ${JSON.stringify(r)}`)
   assert(r.reason === "judge-failure", `reason should be judge-failure, got ${r.reason}`)
@@ -484,7 +527,7 @@ for (const [locale, needle] of [["zh", "请继续"], ["en", "Please continue"], 
     else delete cfg.locale
     const r = await handleTurnEnd({
       ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
-      turnEnd: turnEnd("error"), config: cfg, state: {}, mutate: () => {}, queue: makeQueue(),
+      turnEnd: turnEnd("error"), config: cfg, state: startedState(), mutate: () => {}, queue: makeQueue(),
     })
     assert(r.action === "retry", `should retry, got ${JSON.stringify(r)}`)
     const text = agent.sent[0]?.content?.[0]?.text ?? ""
@@ -497,7 +540,7 @@ await t("flush returns false → reports failure", async () => {
   const agent = makeAgent()
   const r = await handleTurnEnd({
     ctx: makeCtx({ flushOk: false }), agent, session: makeSession({ messages: baseMessages() }),
-    turnEnd: turnEnd("error"), config: makeConfig(), state: {}, mutate: () => {}, queue: makeQueue(),
+    turnEnd: turnEnd("error"), config: makeConfig(), state: startedState(), mutate: () => {}, queue: makeQueue(),
   })
   assert(r.action !== "retry", `should not report success: ${JSON.stringify(r)}`)
   assert(r.error?.includes("durability"), `error should explain the cause: ${r.error}`)

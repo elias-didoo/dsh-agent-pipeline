@@ -12,6 +12,27 @@
  * is meant to catch.
  */
 
+/**
+ * Read the two entries of a branch's `options:` block.
+ *
+ * The block is a nested map, so the parser takes every indented `key: value`
+ * line that follows it and stops at the first line back at the item's indent.
+ */
+function branchOptions(chunk) {
+  const lines = chunk.split("\n")
+  const at = lines.findIndex((l) => /^\s*options:\s*$/.test(l))
+  if (at < 0) return {}
+  const out = {}
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === "") continue
+    const m = /^\s{10,}(\w+):\s*(\S+)\s*$/.exec(line)
+    if (!m) break
+    out[m[1]] = m[2]
+  }
+  return out
+}
+
 let pass = 0
 let fail = 0
 const t = async (name, fn) => {
@@ -30,8 +51,7 @@ const { readFileSync } = await import("node:fs")
 const { join } = await import("node:path")
 const ROOT = new URL("..", import.meta.url).pathname
 
-const { DECISION_ACTIONS } = await import("../lib/decisions.js")
-const { validate } = await import("../lib/config.js")
+const { STEP_KINDS, validateFlowSpec } = await import("../lib/flow-spec.js")
 
 const README = readFileSync(join(ROOT, "README.md"), "utf8")
 const README_ZH = readFileSync(join(ROOT, "README.zh-CN.md"), "utf8")
@@ -58,21 +78,7 @@ function values(block, key) {
  * the `decisions:` section first; otherwise the plugin's own id reads as a
  * decision point with no `when`.
  */
-function decisionSection(block) {
-  if (!block) return ""
-  const start = block.search(/^\s*decisions:\s*$/m)
-  return start < 0 ? "" : block.slice(start)
-}
-
-/** Split a decisions section into its `- id:` items. */
-function items(block) {
-  return decisionSection(block).split(/^\s*-\s+id:\s*/m).slice(1).map((chunk) => ({
-    id: chunk.split("\n")[0].trim(),
-    chunk,
-  }))
-}
-
-const ACTION_IDS = new Set(DECISION_ACTIONS)
+const KIND_IDS = new Set(STEP_KINDS)
 
 console.log("=== 1. The example config ===")
 
@@ -81,79 +87,117 @@ await t("README has a complete config example", () => {
   assert(cfgBlock, "no yaml block with workspaces found")
 })
 
-await t("the example uses `decisions`, not the retired `rules`", () => {
-  assert(/^\s*decisions:/m.test(cfgBlock), "the example must use decisions")
+await t("the example uses `steps` and `flows`, not the retired `decisions`", () => {
+  assert(/^\s*steps:/m.test(cfgBlock), "the example must define steps")
+  assert(/^\s*flows:/m.test(cfgBlock), "the example must define flows")
+  assert(!/^\s*decisions:/m.test(cfgBlock), "decisions is no longer a config key")
   assert(!/^\s*rules:/m.test(cfgBlock), "rules is no longer a config key")
 })
 
-await t("every do value is a real action", () => {
-  const dos = values(decisionSection(cfgBlock), "do")
+await t("every do value is a real step kind", () => {
+  const dos = values(cfgBlock, "do")
   assert(dos.length > 0, "no do fields found")
-  for (const a of dos) assert(ACTION_IDS.has(a), `do: ${a} is not an action`)
-})
-
-await t("every when is prose, not an id", () => {
-  // A short word here would mean the example still assumes an enum of stages.
-  const whens = values(decisionSection(cfgBlock), "when")
-  assert(whens.length > 0, "no when fields found")
-  for (const w of whens) {
-    assert(w.split(/\s+/).length >= 4, `when "${w}" reads like an id, not a description`)
-  }
+  for (const k of dos) assert(KIND_IDS.has(k), `do: ${k} is not a step kind`)
 })
 
 await t("every send has a prompt", () => {
-  const entries = items(cfgBlock)
-  assert(entries.length > 0, "no decision points found")
-  for (const { id, chunk } of entries) {
-    const action = /^\s*do:\s*(\S+)/m.exec(chunk)?.[1]
-    if (action !== "send") continue
+  // Chunk per step so a prompt in the next entry cannot cover for a missing one.
+  const chunks = cfgBlock.split(/^\s*-\s+id:\s*/m).slice(1)
+  assert(chunks.length > 0, "no steps found")
+  for (const chunk of chunks) {
+    const id = chunk.split("\n")[0].trim()
+    const kind = /^\s*do:\s*(\S+)/m.exec(chunk)?.[1]
+    if (kind !== "send" && kind !== "wait-user") continue
     const prompt = /^\s*prompt:\s*(\S.*)$/m.exec(chunk)?.[1]
-    assert(prompt && prompt.trim(), `decision ${id} is a send without a prompt`)
+    assert(prompt && prompt.trim(), `step ${id} (${kind}) has no prompt`)
   }
 })
 
-await t("ids are unique", () => {
-  const ids = items(cfgBlock).map((e) => e.id)
-  assert(new Set(ids).size === ids.length, `duplicate id in ${ids.join(",")}`)
+await t("every branch states a question and two options", () => {
+  const chunks = cfgBlock.split(/^\s*-\s+id:\s*/m).slice(1)
+  const branches = chunks.filter((c) => /^\s*do:\s*branch/m.test(c))
+  for (const chunk of branches) {
+    const id = chunk.split("\n")[0].trim()
+    assert(/^\s*question:/m.test(chunk), `branch ${id} has no question`)
+    const count = Object.keys(branchOptions(chunk)).length
+    assert(count === 2, `branch ${id} should name exactly 2 options, found ${count}`)
+  }
 })
 
 await t("the example passes the real validator", () => {
-  const decisions = items(cfgBlock).map(({ id, chunk }) => ({
-    id,
-    when: /^\s*when:\s*(.+)$/m.exec(chunk)?.[1]?.trim() ?? "",
-    do: /^\s*do:\s*(\S+)/m.exec(chunk)?.[1] ?? "",
-    prompt: /^\s*prompt:\s*(\S.*)$/m.exec(chunk)?.[1] ?? "",
-    notifyText: /^\s*notifyText:\s*(\S.*)$/m.exec(chunk)?.[1] ?? "",
-  }))
-  const r = validate({
-    model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest" },
-    workspaces: [{ path: "/Users/you/project", enabled: true, decisions }],
-  })
+  // Rebuild what the yaml block declares and run it through the same validator
+  // the plugin uses at load, so a doc edit that breaks a reference fails here.
+  const steps = {}
+  for (const chunk of cfgBlock.split(/^\s*-\s+id:\s*/m).slice(1)) {
+    const id = chunk.split("\n")[0].trim()
+    if (!id) continue
+    const kind = /^\s*do:\s*(\S+)/m.exec(chunk)?.[1] ?? ""
+    // Only the items above `flows:` are steps; the flow entries have a name.
+    if (!kind || !KIND_IDS.has(kind)) continue
+    steps[id] = {
+      do: kind,
+      prompt: /^\s*prompt:\s*(.+)$/m.exec(chunk)?.[1]?.trim() ?? "",
+      notifyText: /^\s*notifyText:\s*(.+)$/m.exec(chunk)?.[1]?.trim() ?? "",
+      expect: /^\s*expect:\s*(.+)$/m.exec(chunk)?.[1]?.trim() ?? "",
+      question: /^\s*question:\s*(.+)$/m.exec(chunk)?.[1]?.trim() ?? "",
+    }
+    if (kind === "branch") steps[id].options = branchOptions(chunk)
+  }
+  const flowsSrc = /^\s*flows:\s*\n([\s\S]*)$/m.exec(cfgBlock)?.[1] ?? ""
+  const flows = {}
+  for (const chunk of flowsSrc.split(/^\s*-\s+name:\s*/m).slice(1)) {
+    const name = chunk.split("\n")[0].trim()
+    const list = /^\s*steps:\s*\[([^\]]*)\]/m.exec(chunk)?.[1] ?? ""
+    flows[name] = {
+      label: { en: name, zh: name },
+      steps: list.split(",").map((x) => x.trim()).filter(Boolean),
+    }
+  }
+  const r = validateFlowSpec({ steps, flows })
   assert(!r.issues, `validation failed: ${JSON.stringify(r.issues?.[0])}`)
 })
 
 console.log("\n=== 2. The documented field table matches the code ===")
 
-await t("every action the code accepts is documented", () => {
-  // The table row lists them as `send` / `stop` / `silent` inside one cell, so
-  // match the bare word inside the field table rather than a standalone code span.
-  const start = README.indexOf("## Anatomy of a decision point")
+await t("every step kind the code accepts is documented", () => {
+  const start = README.indexOf("## Anatomy of a step")
   assert(start > 0, "the field table is missing")
   const table = README.slice(start, README.indexOf("###", start + 10))
-  for (const action of DECISION_ACTIONS) {
-    assert(new RegExp(`\\b${action}\\b`).test(table), `action ${action} is not documented`)
+  for (const kind of STEP_KINDS) {
+    assert(new RegExp(`\\b${kind}\\b`).test(table), `kind ${kind} is not documented`)
   }
 })
 
 await t("the documented required fields are the ones validation enforces", () => {
-  // If one side gains a field the other does not know about, the docs mislead.
-  const r = validate({
-    model: { baseUrl: "http://127.0.0.1:8080" },
-    workspaces: [{ path: "/x", enabled: true, decisions: [{ id: "a" }, { id: "b", do: "stop" }] }],
+  const r = validateFlowSpec({
+    steps: { a: { do: "send" }, b: { do: "stop" } },
+    flows: { f: { steps: ["a", "b"] } },
   })
-  // A decision with only an id must be rejected; the docs say when and do are required.
-  assert(r.issues?.some((i) => /when/.test(i.message)), "when must be required")
-  assert(r.issues?.some((i) => /do/.test(i.message)), "do must be required")
+  assert(r.issues?.some((i) => /requires a prompt/.test(i)), "a send without a prompt must be rejected")
+})
+
+console.log("\n=== 3. Both READMEs agree ===")
+
+await t("the Chinese README shows the same step kinds", () => {
+  const zhBlock = yamlBlocks(README_ZH).find((b) => b.includes("workspaces:"))
+  assert(zhBlock, "no config example in README.zh-CN.md")
+  const enKinds = values(cfgBlock, "do").sort().join(",")
+  const zhKinds = values(zhBlock, "do").sort().join(",")
+  assert(enKinds === zhKinds, `step kinds differ: en=[${enKinds}] zh=[${zhKinds}]`)
+})
+
+await t("the Chinese README also uses steps and flows", () => {
+  const zhBlock = yamlBlocks(README_ZH).find((b) => b.includes("workspaces:"))
+  assert(/^\s*steps:/m.test(zhBlock), "the zh example must define steps")
+  assert(/^\s*flows:/m.test(zhBlock), "the zh example must define flows")
+})
+
+await t("neither README still explains the retired stage or decision model", () => {
+  for (const [name, md] of [["README.md", README], ["README.zh-CN.md", README_ZH]]) {
+    assert(!/^## Customizing stages/m.test(md), `${name} still has a stages chapter`)
+    assert(!/^\s*behavior:/m.test(md), `${name} still documents a behavior field`)
+    assert(!/^\s*decisions:/m.test(md), `${name} still documents a decisions key`)
+  }
 })
 
 console.log("\n=== 3. Both READMEs agree ===")
@@ -164,11 +208,6 @@ await t("the Chinese README documents the same actions", () => {
   const enDos = values(cfgBlock, "do").sort().join(",")
   const zhDos = values(zhBlock, "do").sort().join(",")
   assert(enDos === zhDos, `action sets differ: en=[${enDos}] zh=[${zhDos}]`)
-})
-
-await t("the Chinese README also uses decisions", () => {
-  const zhBlock = yamlBlocks(README_ZH).find((b) => b.includes("workspaces:"))
-  assert(/^\s*decisions:/m.test(zhBlock), "the zh example must use decisions")
 })
 
 await t("neither README still explains the retired stage model", () => {

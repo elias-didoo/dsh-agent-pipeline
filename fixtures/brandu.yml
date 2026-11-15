@@ -1,61 +1,114 @@
 # The configuration this plugin runs with for the brandu workspace.
 #
 # This file is the authority, not a sample. README examples are excerpts of it,
-# the live-model test drives the real decision points from it, and a test checks
-# that a deployed profile matches it. Keeping one copy is what stops the test
-# from verifying a configuration nobody runs.
+# the live-model test drives the real flows from it, and a test checks that a
+# deployed profile matches it. Keeping one copy is what stops the test from
+# verifying a configuration nobody runs.
 #
 # It is a fragment of cordis.patch.yml, indented to sit under `config:`.
+#
+# Steps are defined once and referenced by id. The three flows share most of
+# them: only bug_root distinguishes the bug flow from the requirement flow, and
+# only the opening step distinguishes the conflict flow. Copying the shared
+# steps into each flow would mean three prompts to edit for every wording change
+# and three chances for them to drift apart.
 
         workspaces:
           - path: /Users/eliasopenclaw/Downloads/brandu
             enabled: true
-            decisions:
+            steps:
               - id: bug_root
-                when: 用户在报 bug。对话里还没有出现「以上是你的猜测还是已经有证据证明的根因」这条插件消息。
+                label:
+                  en: Root-cause evidence
+                  zh: 根因证据
                 do: send
                 prompt: 以上是你的猜测还是已经有证据证明的根因？需要在浏览器 console 里取什么信息的话你自己去取，cdp 和登录脚本都有现成的
               - id: review
-                when: 用户在提需求、报 bug 或让你落地方案（不是在问问题），agent 刚给出技术方案或评估结论；或者冲突已经问清楚、agent 明确说明确实发生了冲突并讲了怎么解决。对话里还没有出现「该读的文档和代码都去读」。
+                label:
+                  en: Plan review
+                  zh: 方案评审
                 do: send
                 prompt: 该读的文档和代码都去读。二次确认下是否评估全了，是否会带来其他逻辑的影响？这些方案是用户体验最佳吗？架构合理优雅简洁吗？代码规范吗？有过度设计吗？和文档的方向、方案、哲学保持一致吗？一次性做对，不留技术债，不考虑旧数据兼容。仅评估，没让你动仓库。不要评估一半停下来问要不要继续，评估彻底清楚了再回答。文档只是参考未必绝对，你要独立思考什么样是对的。不确定时上网搜搜业内最佳实践
               - id: summarize
-                when: 插件主动发过「该读的文档和代码都去读」这条提问，并且 agent 已经在回应它，回复是评审结论而不是编号清单。还没有出现「汇总列出你计划的改动点」。
+                label:
+                  en: Summarize the plan
+                  zh: 汇总方案
                 do: send
                 prompt: 汇总列出你计划的改动点，要点列全
               - id: confirm
-                when: 对话里已经出现「汇总列出你计划的改动点」这条插件消息，agent 的回复是一条编号的改动清单。这是方案阶段的最后一步，等用户说开干。
+                label:
+                  en: Wait for go-ahead
+                  zh: 等你决定开干
                 do: stop
                 notifyText: 看完方案，等你决定开干
+              - id: start_work
+                label:
+                  en: User says go
+                  zh: 用户说开干
+                do: wait-user
+                prompt: 已经列出改动点。等你说「开干」我再逐项检查你的改动。
+                expect: 开干
               - id: selfcheck_1
-                when: 用户说过开干，agent 已经改完代码。对话里还没有出现「仔细检查你刚改动的所有文件」这条插件提问。
+                label:
+                  en: Self-check round 1
+                  zh: 第一轮自检
                 do: send
                 prompt: 仔细检查你刚改动的所有文件，是否原本计划的改动全都顺利完成了？是否越界了？是否引入了新的问题？方案有任何过度设计的地方吗？注释和文档写的符合规范吗？有问题就去修。TS + lint + build 里有哪些error和warning？
               - id: selfcheck_2
-                when: 用户说过开干、agent 已经改完代码，插件发过「仔细检查你刚改动的所有文件」这条提问，agent 刚回复了检查结果。还没有出现「该修的问题都修」。
+                label:
+                  en: Self-check round 2
+                  zh: 第二轮自检
                 do: send
                 prompt: 该修的问题都修该修的问题都修了吗？有问题就去修
+              - id: selfcheck_branch
+                label:
+                  en: Any problems left?
+                  zh: 还有问题吗
+                do: branch
+                question: agent 对这轮自检的回复，是说仍然有没修完的问题，还是说检查已经全部通过？只看它最后一段结论。
+                options:
+                  problems: selfcheck_3
+                  clean: push
               - id: selfcheck_3
-                when: 对话里还没有出现「每次自检都能发现新问题」这条插件提问，并且 agent 刚刚回复了「该修的问题都修」，说仍有问题。
+                label:
+                  en: Self-check round 3
+                  zh: 第三轮自检
                 do: send
                 prompt: 每次自检都能发现新问题，你觉得还需要下次自检吗？下次你的重点范围和方法是什么？
               - id: selfcheck_go
-                when: 对话里已经出现「每次自检都能发现新问题」这条插件提问，并且 agent 在它之后已经作出回复。
+                label:
+                  en: Run another self-check
+                  zh: 开始自检
                 do: send
                 prompt: 开始自检
               - id: push
-                when: 对话里还没有出现「每次自检都能发现新问题」这条插件提问，并且 agent 刚回复「该修的问题都修」说检查已全部通过。
+                label:
+                  en: Push
+                  zh: 推送
                 do: send
                 prompt: 推送
               - id: conflict
-                when: 对话里还没有出现「刚才rebase/merge最新 head 时是否有冲突」这条插件消息，且 rebase 或 merge 出现了冲突迹象。
+                label:
+                  en: Rebase conflict
+                  zh: 冲突排查
                 do: send
                 prompt: 刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的
-              - id: waiting
-                when: agent 直接向用户提问、请求批准或索要信息；或者 agent 表示冲突已经问清楚且实际没有冲突、不需要再评审。
-                do: stop
-                notifyText: 需要你看一下
-              - id: finished
-                when: agent 已经把代码推到远端（回复里有 HEAD -> main 或 push 成功），或明确宣告整个需求结束。
-                do: stop
-                notifyText: 需求已完成
+            flows:
+              - name: requirement
+                label:
+                  en: Requirement
+                  zh: 需求流程
+                steps: [review, summarize, confirm, start_work, selfcheck_1, selfcheck_2, selfcheck_branch, selfcheck_3, selfcheck_go, push]
+              - name: bug
+                label:
+                  en: Bug
+                  zh: Bug 流程
+                steps: [bug_root, review, summarize, confirm, start_work, selfcheck_1, selfcheck_2, selfcheck_branch, selfcheck_3, selfcheck_go, push]
+              - name: conflict
+                label:
+                  en: Conflict
+                  zh: 冲突流程
+                steps: [conflict, review, summarize, confirm, start_work, selfcheck_1, selfcheck_2, selfcheck_branch, selfcheck_3, selfcheck_go, push]
+            defaults:
+              contextBudgetRatio: 0.7
+              maxTurns: 3
