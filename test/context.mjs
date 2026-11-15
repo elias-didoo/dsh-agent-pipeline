@@ -47,14 +47,46 @@ const countHist = (state) => (state.match(/第\d+轮用户/g) ?? []).length
 
 console.log("=== 1. Token estimation ===")
 
-await t("1000 CJK characters ≈ 1000 tokens", () => {
+// The estimate must not run under the model's real cost: an over-estimate
+// trims context and costs a little accuracy, an under-estimate makes the
+// request fail. These bounds come from measuring each character class against
+// the running model, and every one is deliberately at or above the measurement.
+await t("CJK characters cost about one token each, never fewer", () => {
   const n = estimateTokens("中".repeat(1000))
-  assert(n === 1000, `got ${n}`)
+  assert(n >= 1000, `must not under-estimate, got ${n}`)
+  assert(n < 1300, `must not waste the budget, got ${n}`)
 })
 
-await t("1000 ASCII characters ≈ 250 tokens", () => {
+await t("plain ASCII costs well under one token per character", () => {
   const n = estimateTokens("x".repeat(1000))
-  assert(n === 250, `got ${n}`)
+  assert(n >= 350, `latin text is not free, got ${n}`)
+  assert(n <= 450, `must not be charged as if CJK, got ${n}`)
+})
+
+await t("symbols and emoji cost what the model actually charges", () => {
+  // Measured: a red circle is 3 tokens, a cross 2, a tick 1. The old rule
+  // charged a quarter token for all of them and undershot a real request by
+  // 2.3x.
+  const emoji = estimateTokens("🔴".repeat(100))
+  assert(emoji >= 200, `emoji must not be charged as latin, got ${emoji}`)
+  const tick = estimateTokens("✅".repeat(100))
+  assert(tick >= 100, `symbol glyphs are not cheap, got ${tick}`)
+})
+
+await t("digits and spaces cost a token each", () => {
+  assert(estimateTokens("1234567890") >= 10, "digits tokenize one at a time")
+  assert(estimateTokens(" ".repeat(100)) >= 100, "spaces tokenize one at a time")
+})
+
+await t("the estimate never reads a mixed reply as cheaper than plain text", () => {
+  // A real agent reply is Chinese, ASCII and symbols together. The old rule
+  // scored it below its own CJK baseline.
+  const mixed = "检查结果：✅ 3 项通过，❌ 2 项失败。\n".repeat(50)
+  const cjkOnly = "检查结果：3 项通过，2 项失败。\n".repeat(50)
+  assert(
+    estimateTokens(mixed) >= estimateTokens(cjkOnly),
+    `symbols must not make a reply look cheaper: ${estimateTokens(mixed)} vs ${estimateTokens(cjkOnly)}`,
+  )
 })
 
 await t("empty text → 0", () => {

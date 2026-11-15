@@ -294,13 +294,16 @@ await t("paused but the user has spoken → unpause and continue", async () => {
     turnEnd: turnEnd(), config: makeConfig(),
     state: { awaitingRuleId: "needs_user_input" }, mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
-  // After unpausing, judging continues. Which decision point the model lands on
-  // depends on how it reads a vague reply, so the assertion is on the invariant
-  // rather than on a particular id: a send must never carry a pause, and any
-  // pause that is set must name a real decision point or the uncertain marker.
+  // After unpausing, judging continues. The model reads a vague reply its own
+  // way and the call itself can fail, so the assertion is on the invariant
+  // rather than on a particular id: a send never carries a pause, and any pause
+  // that is set names a real decision point or the uncertain marker.
   assert(r.skipped !== "awaiting-user", `should have unpaused: ${JSON.stringify(r)}`)
   if (r.action === "send") {
     assert(!mutated?.awaitingRuleId, `a send must not pause: ${JSON.stringify(mutated)}`)
+  } else if (r.action === "error") {
+    // The decision service rejected the call; nothing about pausing changes.
+    assert(mutated?.failures >= 1, `an error should count a failure, got ${JSON.stringify(mutated)}`)
   } else {
     assert(
       mutated?.awaitingRuleId === "needs_user_input"

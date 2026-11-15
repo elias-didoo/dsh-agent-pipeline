@@ -325,6 +325,27 @@ const CASES = [
 // one is edited without the other, every assertion below passes against a
 // configuration nobody deploys — which is exactly the drift this arrangement
 // exists to prevent.
+/**
+ * Read one scalar field out of a YAML block, joining folded continuation lines.
+ *
+ * A block scalar may be wrapped across several indented lines; the value is the
+ * join of them. Stopping at the first line would compare a truncated string.
+ */
+function yamlScalar(block, field) {
+  const lines = block.split("\n")
+  const startIdx = lines.findIndex((l) => new RegExp(`^\\s*${field}:`).test(l))
+  if (startIdx < 0) return ""
+  const first = lines[startIdx].replace(new RegExp(`^\\s*${field}:\\s*`), "")
+  const parts = [first]
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const l = lines[i]
+    // A new `key:` at the same or lower indent ends the value.
+    if (/^\s*[a-zA-Z]+:/.test(l) || l.trim() === "") break
+    parts.push(l.trim())
+  }
+  return parts.join(" ").trim()
+}
+
 function checkProfileMatches() {
   const home = process.env.HOME
   if (!home) return "HOME is unset; skipped"
@@ -351,13 +372,16 @@ function checkProfileMatches() {
   // Compare every field, not just the id list. Matching ids with drifted prose
   // would leave the model reading criteria that were never tested, and a
   // drifted prompt would send text nobody reviewed.
+  //
+  // Values are read as whole blocks rather than line by line: YAML folds a long
+  // scalar across several indented lines, and a per-line match reports the
+  // first line as a mismatch against the whole value.
   const blocks = deployed.split(/^\s*- id:\s*/m).slice(1)
   for (const [i, d] of workspace.decisions.entries()) {
     const block = blocks[i]
     assert(block, `decision ${d.id} is missing from the profile`)
     for (const field of ["when", "do", "prompt", "notifyText"]) {
-      const m = new RegExp(`^\\s*${field}:\\s*(.+?)\\s*$`, "m").exec(block)
-      const deployedValue = m ? m[1] : ""
+      const deployedValue = yamlScalar(block, field)
       const fixtureValue = d[field] ?? ""
       assert(
         deployedValue === fixtureValue,
