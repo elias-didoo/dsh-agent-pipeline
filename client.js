@@ -1,13 +1,14 @@
 /**
  * decision-orchestrator client: the standing flow panel.
  *
- * One panel, docked under the composer: the running flow's steps, marked done /
- * in progress / pending, with pause, resume and cancel. It renders from the
- * session projection rather than from the current turn, which is what makes it
- * stay put when the user sends a message — the failure mode of a per-turn panel.
+ * One panel, docked above the composer beside the todo list and the goal: the
+ * running flow's steps, marked done / in progress / pending, with pause, resume
+ * and cancel. It renders from the session projection rather than from the
+ * current turn, which is what makes it stay put when the user sends a message —
+ * the failure mode of a per-turn panel.
  *
  * Registration mirrors the built-in client plugins:
- *   ctx.slots.inject(`conversation.composer.dock`, function* () {
+ *   ctx.slots.inject(`conversation.input.dock`, function* () {
  *     yield ctx.slots.register({ name, id, locale, inject }, Component)
  *   })
  *
@@ -215,14 +216,14 @@ window.__ModuleLoader__.load({
         } catch { /* ignore */ }
       }
 
-      ctx.slots.inject("conversation.composer.dock", function* () {
+      ctx.slots.inject("conversation.input.dock", function* () {
         yield ctx.slots.register(
           {
             name: NS,
             id: "flow",
-            // Below the shipped dock entries: this is ambient status, not a
-            // control the user reaches for first.
-            order: 20,
+            // After todo (0) and goal (10): a flow sits beside the plan and the
+            // goal, not above them. Below queue (20) for the same reason.
+            order: 15,
             label: () => {
               const t = makeT(activeLocale)
               return t("flow.pause")

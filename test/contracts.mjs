@@ -67,8 +67,10 @@ await t("the client no longer registers a context menu", () => {
 
 console.log("\n=== 3. slots contract ===")
 
-await t("slots.inject targets the composer dock and uses the generator form", () => {
-  has(clientCode, /slots\.inject\(\s*"conversation\.composer\.dock"\s*,\s*function\s*\*/, 'slots.inject must target "conversation.composer.dock" with a generator')
+await t("slots.inject targets the input dock and uses the generator form", () => {
+  // conversation.input.dock is where the todo list and the goal panel live; a
+  // flow belongs beside them, not under the composer.
+  has(clientCode, /slots\.inject\(\s*"conversation\.input\.dock"\s*,\s*function\s*\*/, 'slots.inject must target "conversation.input.dock" with a generator')
 })
 
 /** The source text of the object literal passed to slots.register(). */
