@@ -10,7 +10,6 @@
 
 import { resolveUiLocale } from "./lib/host-locale.js"
 import { Config, validateConfig } from "./lib/config.js"
-import { BUILTIN_STAGES } from "./lib/stages.js"
 import { handleTurnEnd } from "./lib/core.js"
 import { SerialQueue } from "./lib/judge.js"
 import { log } from "./lib/log.js"
@@ -28,39 +27,28 @@ const PROJECTION_KEY = "decision-orchestrator"
  * through the closure created in `init`.
  */
 function initialState(header, config) {
-  let rulesEnabled = false
-  let rulesView = []
-  let stagesView = []
+  let enabled = false
+  let decisionsView = []
   try {
     const wsPath = header?.cwd
     const ws = (config?.workspaces ?? []).find((w) => w?.path === wsPath)
     if (ws?.enabled === true) {
-      rulesEnabled = true
-      rulesView = (ws.rules ?? []).map((r) => ({
-        id: r.id,
-        when: r.when,
-        scene: r.scene,
-        action: r.action,
-        prompt: r.prompt ?? "",
-        notifyText: r.notifyText ?? "",
+      enabled = true
+      // Everything the panel needs, in list order. A decision point carries its
+      // own `when`, so there is nothing to group and no second table to keep in
+      // step with the first.
+      decisionsView = (ws.decisions ?? []).map((d) => ({
+        id: d.id,
+        when: d.when,
+        do: d.do,
+        prompt: d.prompt ?? "",
+        notifyText: d.notifyText ?? "",
       }))
     }
   } catch { /* ignore */ }
-  // Stage definitions the client renders its group headings from. Read once at
-  // init: they come from the same config the rules do.
-  try {
-    // Same fallback effectiveConfig uses: an absent `stages` means the
-    // built-ins, not "no stages". Without this the panel would receive an empty
-    // list and show every rule under "unrecognized stage".
-    stagesView = (config?.stages ?? BUILTIN_STAGES).map((st) => ({
-      id: st.id,
-      behavior: st.behavior,
-      label: { en: st.label?.en ?? st.id, zh: st.label?.zh ?? st.id },
-    }))
-  } catch { /* ignore */ }
   // The projection holds derived facts only; runtime counters belong to the
   // main loop and never go here.
-  return { rulesEnabled, rulesView, stagesView }
+  return { enabled, decisionsView }
 }
 
 /**
@@ -97,9 +85,8 @@ const stateSchema = {
   parse(value) {
     const v = value && typeof value === "object" ? value : {}
     return {
-      rulesEnabled: v.rulesEnabled === true,
-      rulesView: Array.isArray(v.rulesView) ? v.rulesView : [],
-      stagesView: Array.isArray(v.stagesView) ? v.stagesView : [],
+      enabled: v.enabled === true,
+      decisionsView: Array.isArray(v.decisionsView) ? v.decisionsView : [],
     }
   },
 }
@@ -116,8 +103,7 @@ const viewSchema = {
     const v = value && typeof value === "object" ? value : {}
     return {
       enabled: v.enabled === true,
-      rules: Array.isArray(v.rules) ? v.rules : [],
-      stages: Array.isArray(v.stages) ? v.stages : [],
+      decisions: Array.isArray(v.decisions) ? v.decisions : [],
     }
   },
 }
@@ -129,17 +115,15 @@ const viewSchema = {
  * declare wire.view on the Host projection."
  *
  * `summary: true` puts the view's result into the client's
- * `session.projectionValues`. `state.rulesView` is written by the main loop
- * after each turn/end with the rule snapshot of the session's workspace.
+ * `session.projectionValues`.
  */
 function viewOf(state) {
   // Expose only facts rebuildable from the log: whether a workspace is enabled
-  // and what its rules are. iterations / stopped are runtime state that never
-  // reaches the log, so exposing them would show a stale 0.
+  // and what its decision points are. iterations / stopped are runtime state
+  // that never reaches the log, so exposing them would show a stale 0.
   return {
-    enabled: state?.rulesEnabled === true,
-    rules: Array.isArray(state?.rulesView) ? state.rulesView : [],
-    stages: Array.isArray(state?.stagesView) ? state.stagesView : [],
+    enabled: state?.enabled === true,
+    decisions: Array.isArray(state?.decisionsView) ? state.decisionsView : [],
   }
 }
 
@@ -193,7 +177,7 @@ export function apply(ctx, config) {
   try {
     projectionHandle = ctx.sessionProjections.register({
       key: PROJECTION_KEY,
-      stateVersion: 2,
+      stateVersion: 3,
       stateSchema,
       init: (header) => initialState(header, config),
       apply: applyEvent,

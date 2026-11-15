@@ -2,9 +2,9 @@
 
 **中文** | [English](README.md)
 
-[DeepSeek Harness](https://github.com/deepseek-ai) 插件：在 agent 每一轮工作结束后，用本地决策模型判断当前处于流程的哪个阶段，按你配置的规则自动推进。
+[DeepSeek Harness](https://github.com/deepseek-ai) 插件：在 agent 每一轮工作结束后，用本地决策模型判断当前该做什么，按你配置的决策点自动推进。
 
-> **它不替你思考，只是把「下一步该做什么」这一判断交给一个模型，然后按你写好的规则执行。**
+> **它不替你思考，只是把「下一步该做什么」这一判断交给一个模型，然后按你写好的决策点执行。**
 
 ## 前置条件
 
@@ -33,7 +33,7 @@ npm test          # 可选，验证环境
 }
 ```
 
-最后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里挂载（配置样例见下文「规则怎么配」）：
+最后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里挂载（配置样例见下文「决策点怎么配」）：
 
 ```yaml
 - insert:
@@ -52,44 +52,21 @@ npm test          # 可选，验证环境
                           ↓
               插件读 agent 最后一条回复 + 往前几轮对话
                           ↓
-              本地 Kev 判定「当前处于 6 个阶段中的哪一个」
+              本地 Kev 判定「最符合当前情形的是哪个决策点」
                           ↓
-              插件数日志，算出「这个阶段走到第几步」
+              插件查日志：这个决策点是不是已经触发过了
                           ↓
         ┌─────────────────┼─────────────────┐
      自动发送          停下来等你          什么都不做
 ```
 
-**为什么要分成两步**：Kev 擅长判断「现在在讨论方案还是改代码」，但判断不了「这是第几轮自检」——后者不在对话文本里。所以阶段交给模型，顺序交给计数器。
+**为什么要分成两步**：判断「现在是什么情形」交给模型——它读对话（包括插件自己发的消息），去匹配你写的 `when`。记住「哪些已经发生了」交给插件——它数日志里的消息，精确且几乎不花成本。
 
-## 阶段
+两边都不猜对方的活。模型不被要求记账，插件也不去解读散文。
 
-一个阶段只回答一个问题：agent 现在处于工作的哪一步？它的 `behavior` 决定
-插件知道这一点之后做什么。
+## 决策点怎么配
 
-下面的阶段是**默认值**，工作区可以整套替换 —— 见[自定义阶段](#自定义阶段)。
-
-| 阶段 | behavior | 含义 |
-|---|---|---|
-| `planning` | `sequence` | 用户在讨论需求或方案，agent 从未改过代码 |
-| `implementing` | `passive` | agent 正在改代码 |
-| `selfchecking` | `sequence` | agent 已完成改动，在做自检 |
-| `waiting` | `terminal` | agent 停下，明确等你决定 |
-| `finished` | `terminal` | 任务彻底结束 |
-| `conflict` | `once` | rebase/merge 遇到冲突 |
-
-### 四种 behavior
-
-| behavior | 做什么 |
-|---|---|
-| `sequence` | 按配置顺序发 `send` 规则，每次一条。全发完后交给该阶段的 `stop` 规则。 |
-| `once` | 发第一条还没发过的 `send` 规则，之后不再选中。 |
-| `terminal` | 不发消息，只发 `stop` 规则，让自动推进停下来等你。 |
-| `passive` | 完全不动作。用于 agent 正在干活、不该被打断的阶段。 |
-
-## 规则怎么配
-
-在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里编辑本插件的 `config`：
+改 `~/.dsh/profiles/desktop/cordis.patch.yml` 里本插件的 `config`：
 
 ```yaml
 - id: decision-orchestrator
@@ -101,164 +78,79 @@ npm test          # 可选，验证环境
     workspaces:
       - path: /Users/you/project
         enabled: true
-        rules:
-          # ── 方案阶段：按顺序各发一次 ──
+        decisions:
           - id: bug_root
-            when: planning
-            scene: 用户在报 bug，agent 已排查但根因只是推测，没有证据证明
-            action: send
+            when: 用户在报 bug，agent 已排查但根因还只是推测，插件还没问过证据
+            do: send
             prompt: 以上是你的猜测还是已经有证据证明的根因？需要在浏览器 console 里取什么信息的话你自己去取，cdp 和登录脚本都有现成的
 
           - id: review
-            when: planning
-            scene: user 尚未说开干，agent 刚给出技术方案或评估报告
-            action: send
-            prompt: 该读的文档和代码都去读。二次确认下是否评估全了，是否会带来其他逻辑的影响？…
+            when: agent 刚给出技术方案或评估结论，插件还没发过评审要求
+            do: send
+            prompt: 该读的文档和代码都去读。二次确认下是否评估全了…
 
           - id: summarize
-            when: planning
-            scene: 二次评审已完成，需要汇总改动点
-            action: send
+            when: 插件已发过评审要求，agent 已答复，插件还没要求汇总改动点
+            do: send
             prompt: 汇总列出你计划的改动点，要点列全
 
-          - id: need_confirm
-            when: planning
-            scene: 改动点已汇总，等用户决定是否开干
-            action: stop
-            notifyText: 看完方案，等你决定开干
-
-          # ── 自检阶段：固定四步 ──
-          - id: selfcheck_1
-            when: selfchecking
-            scene: 代码改动完成，尚未自检
-            action: send
-            prompt: 仔细检查你刚改动的所有文件，是否原本计划的改动全都顺利完成了？…
-
-          - id: selfcheck_2
-            when: selfchecking
-            scene: 第一轮自检完成
-            action: send
-            prompt: 该修的问题都修该修的问题都修了吗？有问题就去修
-
-          - id: selfcheck_3
-            when: selfchecking
-            scene: 第二轮自检完成
-            action: send
-            prompt: 每次自检都能发现新问题，你觉得还需要下次自检吗？
-
-          - id: push
-            when: selfchecking
-            scene: 三轮自检都完成
-            action: send
-            prompt: 推送
-
-          # ── 其他阶段 ──
-          - id: conflict
-            when: conflict
-            scene: rebase 或 merge 最新 head 时发生冲突
-            action: send
-            prompt: 刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的
-
-          - id: waiting
-            when: waiting
-            scene: agent 停下并等待用户决定
-            action: stop
-            notifyText: 需要你看一下
+          - id: confirm
+            when: agent 已列出改动点清单，在等用户决定是否开干
+            do: stop
+            notifyText: 方案已就绪，等你决定是否开干
 
           - id: finished
-            when: finished
-            scene: 任务已推送或 agent 明确说全部完成
-            action: stop
-            notifyText: 需求已完成
+            when: 已推送完成（回复里有 HEAD -> main），或明确宣告任务结束
+            do: stop
+            notifyText: 任务已结束。
 ```
 
-### 规则字段
+## 决策点的字段
 
-| 字段 | 说明 |
-|---|---|
-| `id` | 规则标识，同一工作区内唯一 |
-| `when` | **属于哪个阶段**，必须是上面 6 个之一 |
-| `scene` | 场景描述，帮助理解这条规则何时生效（不直接喂给模型） |
-| `action` | `send` 自动发 / `stop` 停下来等你 / `silent` 不做事 |
-| `prompt` | `action: send` 时必填 |
-| `notifyText` | 选填，面板上说明这条规则停下时是什么情况 |
+一个决策点就是插件接下来**可能做的一件事**。模型读对话，挑出最符合当前情形的那一条，插件照着执行。
 
-### 同一阶段内的顺序
+| 字段 | 必填 | 含义 |
+|---|---|---|
+| `id` | 是 | 稳定标识，也是它发出的消息上打的标记 |
+| `when` | 是 | **这个决策点适用的情形，用自然语言写。** 这就是模型的输入 |
+| `do` | 是 | `send` 发消息 / `stop` 停下等你 / `silent` 什么都不做 |
+| `prompt` | `send` 必填 | 要发的正文 |
+| `notifyText` | 否 | 面板上说明这个 `stop` 是什么意思 |
 
-**同一 `when` 下的 `send` 规则，按配置顺序各发一次。**
+**没有阶段列表，没有 behavior 表，没有条件表达式。** `when` 写成散文，是因为模型分辨「agent 仍说发现了问题」比任何正则都准。
 
-- `planning` 阶段：`bug_root` → `review` → `summarize` → 全部发过之后由 `need_confirm` 停下来
-- `selfchecking` 阶段：`selfcheck_1` → `selfcheck_2` → `selfcheck_3` → `push`，发完就停
+### 顺序
 
-顺序靠**数日志里发过的消息**决定，不是靠模型判断，所以准确率是 100%。
+**每个决策点只触发一次。** 配置里的顺序不决定先后——模型按情形挑，不按位置挑。顺序只影响面板里怎么读。
 
-## 自定义阶段
+插件保证同一条 `send` 不会重复：它按 `id` 数自己发过的消息，发过就不再发。`stop` 停一次，之后保持安静，直到用户再次开口。
 
-阶段是数据。增、删、改名都可以 —— 流水线里没有任何地方按阶段名分支。
+### `when` 怎么写才有效
 
-定义 `stages` 之后，内置列表被**整套替换**：
+模型靠**情形之间的边界**来区分，而它只能用对话里有的东西。两条实测有效的规则：
+
+**引用插件已经发过的消息原文。** 对话里包含插件自己发的消息，用开头几个字点名它们：
 
 ```yaml
-    stages:
-      - id: intake
-        behavior: sequence
-        label: { en: "Intake", zh: "接需求" }
-        criteria: 用户刚提出需求，agent 还在确认要做什么
-      - id: coding
-        behavior: passive
-        label: { en: "Coding", zh: "写代码" }
-        criteria: agent 正在修改代码文件
-      - id: handover
-        behavior: terminal
-        label: { en: "Handover", zh: "交接" }
-        criteria: agent 已经推送完成，或明确宣告需求结束
-
-    workspaces:
-      - path: /Users/you/project
-        enabled: true
-        rules:
-          - id: clarify
-            when: intake        # ← 指向你自己定义的阶段
-            scene: 需求还不清楚
-            action: send
-            prompt: 你想改哪个页面？
-          - id: confirm
-            when: intake
-            scene: 需求已确认
-            action: stop
-          - id: done
-            when: handover
-            scene: 已完成
-            action: stop
+- id: summarize
+  when: 对话里已经出现「该读的文档和代码都去读」，但 agent 的回复是一段评审结论，
+        不是编号清单。还没有出现「汇总列出你计划的改动点」。
+- id: confirm
+  when: 对话里已经出现「汇总列出你计划的改动点」这条插件消息，agent 的回复是一条
+        编号的改动清单。这是方案阶段的最后一步。
 ```
 
-### 字段要求
+不写这两句，两条判据在模型眼里几乎一样。写上之后，同一个场景里正确答案的置信度从 14.8% 升到 51.1%。
 
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `id` | 是 | 唯一。规则的 `when` 引用它。 |
-| `behavior` | 是 | `sequence` / `once` / `terminal` / `passive` 之一。 |
-| `label.en` / `label.zh` | 是 | 面板显示用，client 按界面语言选。 |
-| `criteria` | 是 | 送给模型的判据。**中文效果最好**，见下文。 |
+**描述回复长什么样，而不只是发生了什么。**「agent 给出了方案」在评审前后都成立；「一条编号的改动清单」只有汇总后才有。
 
-### 校验会拦住的两件事
+用什么语言写都行，中英文都可以。
 
-**至少要有一个 `terminal` 阶段。** 否则 `sequence` 阶段发完所有规则后无处可去，
-之后每一轮都只会记一条 skip，流程永远不收敛。
+### 决策点越多，边界越要拉开
 
-**每个阶段都要有 `criteria`。** 模型靠这些描述去匹配对话。判据含糊的阶段，
-模型永远选不中。
+每个决策点对模型都是一个选项，选项越多，相邻描述越难区分。在 12 条的集合上实测：删掉一条与当前对话完全无关的判据，正确答案就被相邻的抢走——因为它稀释了整个候选面。
 
-### 判据怎么写才有效
-
-模型区分阶段靠的是阶段之间的**边界**，不是阶段名。有两点实测有效：
-
-- **写出这个阶段和相邻阶段的区别**，而不只是它是什么。
-- **用中文写。** 真实会话的九个场景里，中文判据命中 8/9，同样描述的英文译版
-  只有 5/9，且短回复下会跌破置信度门槛。交叉验证表明决定因素是判据语言，
-  不是对话语言。
-
-加完阶段后要试跑：走一遍会进入该阶段的流程，看日志里 `judge` 事件是否选中了它。
+所以一套判据不灵时，正确的做法通常是**把相邻的那两条写得更锋利**，而不是再加条目。十几个决策点的工作区，需要比三个的写得更分明。
 
 ## 语言
 
@@ -267,28 +159,22 @@ npm test          # 可选，验证环境
 | 位置 | 跟随 |
 |---|---|
 | 面板文案、发给 agent 的「请继续」 | **DSH 的界面语言设置** |
-| 阶段判据（送给决策模型的文本） | **始终中文** |
+| 决策点的 `when`（送给决策模型的文本） | 按你的配置 |
 
 面板从 DSH 设置读语言，不用额外配置就和界面一致。如果从来没在 DSH 里显式
 选过语言，插件回退到英文。
 
-判据保持中文的原因见上：模型在中文下区分阶段可靠得多。它是模型输入，不是文档。
+`when` 是模型输入，不是文档，按你顺手的方式来写。
 
 ## 置信度
 
-Kev 返回的是概率分布。插件用的是**归一化置信度**：
+模型给每个选项一个概率。置信度就是它选中那一项的概率——原始 `p_max`，不再做任何折算。
 
-```
-normalized = (p_max - 1/n) / (1 - 1/n)
-```
+低于 `confidenceFloor`（默认 `0.15`）时插件不动作：记一条 `uncertain` 日志并暂停自动推进。对话没有明确对上任何决策点的那些轮次因此不会产生动作，这正是期望行为。
 
-含义：把「瞎猜」压到 0，把「绝对确定」拉到 1。
+**为什么不用归一化。** 早期版本把随机基准 `1/n` 映到 0，好处是固定门槛在任意选项数下含义一致。6 个选项时成立，11 个选项时失效：正确答案归一化后落在 0.06–0.41，而瞎猜落在 0.04–0.06，区间重叠，任何门槛都分不开。原始 `p_max` 能分开——正确答案 0.21 以上，瞎猜 0.14 以下。
 
-**为什么要归一化**：原始 `p_max` 的含义随选项数变化——2 个选项时瞎猜是 0.5，6 个选项时瞎猜是 0.167。不归一化的话，门槛的松紧会跟着阶段数漂移。
-
-**因此插件固定发全部 6 个阶段给模型**，不按当前配置裁剪。否则选项数随配置变化，同一个 0.5 在不同工作区代表不同把握。你没配规则的阶段不会被选中执行。
-
-低于 `confidenceFloor`（默认 0.3）时，插件不动作，记一条 `uncertain` 日志并暂停自动推进。
+**代价：** 有效区间取决于工作区定义了多少个决策点。默认值适合十个左右；选项多得多的工作区可能要调低门槛。每条 `judge` 日志都带完整分布，可以拿真实会话重新标定。
 
 ## 全局参数
 
@@ -296,7 +182,7 @@ normalized = (p_max - 1/n) / (1 - 1/n)
     defaults:
       maxIterations: 20        # 单会话最多自动推进多少轮
       failureRetryLimit: 3     # 连续出错几次后停止（网络错误与决策服务失败共用此计数）
-      confidenceFloor: 0.3     # 归一化置信度门槛
+      confidenceFloor: 0.15    # 原始 p_max 门槛
       humanCooldownMs: 30000   # 你发言后多久内不自动发送
       quietWindowMs: 30000     # 其他 agent relay 后多久内不自动发送
       contextBudgetRatio: 0.7  # 上下文占用模型窗口比例
@@ -345,7 +231,7 @@ agent 因网络中断或 provider 超时停止时，连续重发到 `failureRetr
 
 这与 `dsh-llm-retry` 不冲突：后者是系统级重连，插件只在会话**已停止后**才发消息。
 
-## 看规则
+## 看决策点
 
 左栏工作区右键 → **决策规则…** → 按阶段分组展示当前规则。
 
@@ -360,7 +246,7 @@ agent 因网络中断或 provider 超时停止时，连续重发到 `failureRetr
 - 不会误触发会话标题生成
 - 不会重置重复工具调用保护
 - 不会被当成「人工活动」而自我抑制
-- 插件靠它数日志推导阶段进度
+- 插件靠它数日志判断哪些决策点已触发
 
 ## 看日志
 
@@ -374,9 +260,9 @@ tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 |---|---|
 | `apply` / `projection-ready` | 插件挂载、投影就绪 |
 | `locale` | 本次进程解析出的界面语言 |
-| `judge` | 一次判定；含 `stage`、`confidence`、`rawConfidence` |
-| `pick` | 选中了哪条规则；含 `stage`、`ruleId`、`progress` |
-| `halt` | 命中 stop 规则，自动推进已暂停；`ruleId` 说明是哪条 |
+| `judge` | 一次判定；含 `decision`、`confidence`、完整 `probabilities` |
+| `pick` | 选中了哪个决策点；含 `decision`、`progress` |
+| `halt` | 命中 stop 决策点，自动推进已暂停 |
 | `stop` | 因错误或迭代上限而终止；`why` 说明原因 |
 | `uncertain` | 置信度不足，未做判定 |
 | `send` | 自动发送了一条提示词；含 `ruleId`、`iterations` |

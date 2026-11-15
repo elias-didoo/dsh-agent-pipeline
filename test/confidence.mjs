@@ -1,17 +1,15 @@
 /**
- * Confidence normalization tests.
+ * Confidence and the uncertain path.
  *
- * Raw p_max depends on the option count (a blind guess lands at 1/2, 1/5, 1/6),
- * while after normalization 0.5 means the same thing regardless of count —
- * which is what makes a fixed threshold possible.
+ * `confidenceFloor` is compared against raw `p_max`, the probability the model
+ * put on the option it chose. Normalization was tried first and dropped: it maps
+ * the random baseline 1/n to 0, but with many options it also compresses a
+ * correct answer into the same band as a guess, so no threshold separated them.
+ * These tests pin the raw semantics so the threshold means what the config says.
  */
-
-const { confidenceOf } = await import("../lib/judge.js")
 
 let pass = 0
 let fail = 0
-// Must await fn(): a synchronous runner cannot catch assertion failures
-// inside async test bodies.
 const t = async (name, fn) => {
   try {
     await fn()
@@ -22,122 +20,94 @@ const t = async (name, fn) => {
     console.log(`  ❌ ${name} — ${e.message}`)
   }
 }
-const assert = (cond, msg) => {
-  if (!cond) throw new Error(msg)
-}
-const near = (a, b, eps = 0.001) => Math.abs(a - b) <= eps
+const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
-console.log("=== 1. The normalization formula ===")
+const { confidenceOf, interpret, Outcome } = await import("../lib/judge.js")
 
-await t("2 options, p=0.55 → 0.10 (barely better than chance)", () => {
-  const c = confidenceOf({ a: 0.55, b: 0.45 }, "a")
-  assert(near(c, 0.1), `got ${c.toFixed(4)}`)
+/** A model response with the given distribution. */
+const answer = (choice, probabilities) => ({ answers: { next: { type: "choice", choice, probabilities } } })
+
+console.log("=== 1. confidenceOf reports p_max verbatim ===")
+
+await t("returns the probability of the chosen option", () => {
+  assert(confidenceOf({ a: 0.9, b: 0.1 }, "a") === 0.9, "should be 0.9")
 })
 
-await t("2 options, p=0.90 → 0.80", () => {
-  const c = confidenceOf({ a: 0.9, b: 0.1 }, "a")
-  assert(near(c, 0.8), `got ${c.toFixed(4)}`)
+await t("does not normalize against the option count", () => {
+  // The same 0.9 means the same thing whether there are 2 options or 20.
+  const many = Object.fromEntries([["a", 0.9], ...Array.from({ length: 19 }, (_, i) => [`o${i}`, 0.1 / 19])])
+  assert(Math.abs(confidenceOf(many, "a") - 0.9) < 1e-9, `got ${confidenceOf(many, "a")}`)
 })
 
-await t("2 options, p=0.50 (exactly baseline) → 0", () => {
-  const c = confidenceOf({ a: 0.5, b: 0.5 }, "a")
-  assert(near(c, 0), `got ${c.toFixed(4)}`)
+await t("a below-chance guess stays low rather than becoming 0", () => {
+  // 0.2 of 5 options is exactly chance. Raw keeps it at 0.2, below the floor.
+  assert(confidenceOf({ a: 0.2, b: 0.2, c: 0.2, d: 0.2, e: 0.2 }, "a") === 0.2, "should stay 0.2")
 })
 
-await t("5 options, p=0.20 (exactly baseline) → 0", () => {
-  const probs = { a: 0.2, b: 0.2, c: 0.2, d: 0.2, e: 0.2 }
-  const c = confidenceOf(probs, "a")
-  assert(near(c, 0), `got ${c.toFixed(4)}`)
+await t("a missing or non-numeric probability is 0", () => {
+  assert(confidenceOf({}, "a") === 0, "missing")
+  assert(confidenceOf(undefined, "a") === 0, "no distribution")
+  assert(confidenceOf({ a: "high" }, "a") === 0, "non-numeric")
+  assert(confidenceOf({ a: NaN }, "a") === 0, "NaN")
 })
 
-await t("5 options, p=0.926 → ≈0.907", () => {
-  const probs = { implementing: 0.926, planning: 0.034, selfchecking: 0.015, waiting: 0.014, finished: 0.011 }
-  const c = confidenceOf(probs, "implementing")
-  assert(near(c, 0.907, 0.01), `got ${c.toFixed(4)}`)
+await t("out-of-range values are clamped", () => {
+  assert(confidenceOf({ a: 1.7 }, "a") === 1, "above 1")
+  assert(confidenceOf({ a: -0.3 }, "a") === 0, "below 0")
 })
 
-await t("5 options, p=0.634 → ≈0.542", () => {
-  const probs = { selfchecking: 0.634, finished: 0.159, waiting: 0.13, implementing: 0.041, planning: 0.035 }
-  const c = confidenceOf(probs, "selfchecking")
-  assert(near(c, 0.542, 0.01), `got ${c.toFixed(4)}`)
+console.log("\n=== 2. The floor decides between DECISION and UNCERTAIN ===")
+
+await t("a confident answer is a decision", () => {
+  const r = interpret(answer("a", { a: 0.8, b: 0.2 }), { confidenceFloor: 0.15 })
+  assert(r.outcome === Outcome.DECISION, `got ${r.outcome}`)
+  assert(r.decision === "a", `got ${r.decision}`)
 })
 
-await t("5 options, p=0.279 (ambiguous case) → ≈0.099", () => {
-  const probs = { planning: 0.279, waiting: 0.262, implementing: 0.197, finished: 0.159, selfchecking: 0.103 }
-  const c = confidenceOf(probs, "planning")
-  assert(near(c, 0.099, 0.01), `got ${c.toFixed(4)}`)
+await t("a guess is uncertain", () => {
+  const r = interpret(answer("a", { a: 0.09, b: 0.3, c: 0.3, d: 0.31 }), { confidenceFloor: 0.15 })
+  assert(r.outcome === Outcome.UNCERTAIN, `got ${r.outcome}`)
+  assert(/confidence/.test(r.reason), `reason should explain: ${r.reason}`)
 })
 
-console.log("\n=== 2. Key property: decoupled from option count ===")
-
-await t("equal certainty normalizes near 1 at any option count", () => {
-  const c2 = confidenceOf({ a: 0.999, b: 0.001 }, "a")
-  const c5 = confidenceOf({ a: 0.999, b: 0.00025, c: 0.00025, d: 0.00025, e: 0.00025 }, "a")
-  assert(c2 > 0.99, `2 options ${c2}`)
-  assert(c5 > 0.99, `5 options ${c5}`)
+await t("the default floor is 0.15", () => {
+  // Calibrated from measurement: correct answers landed at 0.21 and up, guesses
+  // at 0.14 and below.
+  const justAbove = interpret(answer("a", { a: 0.16, b: 0.84 }), {})
+  assert(justAbove.outcome === Outcome.DECISION, "0.16 should pass the default")
+  const justBelow = interpret(answer("a", { a: 0.14, b: 0.86 }), {})
+  assert(justBelow.outcome === Outcome.UNCERTAIN, "0.14 should fail the default")
 })
 
-await t("the same lead over baseline normalizes similarly at any option count", () => {
-  // 2 options: baseline 0.5, pick 0.55
-  const c2 = confidenceOf({ a: 0.55, b: 0.45 }, "a")
-  // 5 options: baseline 0.2, pick 0.24 (20% above baseline)
-  const c5 = confidenceOf({ a: 0.24, b: 0.19, c: 0.19, d: 0.19, e: 0.19 }, "a")
-  assert(near(c2, 0.1, 0.02), `2 options ${c2.toFixed(3)}`)
-  assert(near(c5, 0.05, 0.02), `5 options ${c5.toFixed(3)}`)
+await t("the floor is configurable", () => {
+  const strict = interpret(answer("a", { a: 0.5, b: 0.5 }), { confidenceFloor: 0.9 })
+  assert(strict.outcome === Outcome.UNCERTAIN, "0.5 should fail a 0.9 floor")
 })
 
-console.log("\n=== 3. Boundaries and edge cases ===")
+console.log("\n=== 3. Malformed responses ===")
 
-await t("probability below baseline → 0 (never negative)", () => {
-  const c = confidenceOf({ a: 0.1, b: 0.5, c: 0.4 }, "a")
-  assert(c === 0, `got ${c}`)
+await t("no answers is an error", () => {
+  const r = interpret({}, {})
+  assert(r.outcome === Outcome.ERROR, `got ${r.outcome}`)
+  assert(r.code === "INVALID_RESPONSE", `got ${r.code}`)
 })
 
-await t("unknown option → 0", () => {
-  assert(confidenceOf({ a: 0.5, b: 0.5 }, "zzz") === 0, "should be 0")
+await t("a missing choice is an error", () => {
+  const r = interpret({ answers: { next: { type: "choice" } } }, {})
+  assert(r.outcome === Outcome.ERROR, `got ${r.outcome}`)
 })
 
-await t("empty distribution → 0", () => {
-  assert(confidenceOf({}, "a") === 0, "should be 0")
+await t("a non-choice answer is an error", () => {
+  const r = interpret({ answers: { next: { type: "noul", noul: 0.9 } } }, {})
+  assert(r.outcome === Outcome.ERROR, `got ${r.outcome}`)
 })
 
-await t("single option → raw value (no baseline exists)", () => {
-  const c = confidenceOf({ only: 0.8 }, "only")
-  assert(near(c, 0.8), `got ${c}`)
-})
-
-await t("the result is always within 0..1", () => {
-  for (const p of [0, 0.001, 0.5, 0.999, 1]) {
-    const c = confidenceOf({ a: p, b: 1 - p }, "a")
-    assert(c >= 0 && c <= 1, `p=${p} → ${c}`)
-  }
-})
-
-console.log("\n=== 4. Threshold behaviour in practice ===")
-
-await t("floor 0.3: ambiguous cases blocked, real judgements all pass", () => {
-  const floor = 0.3
-  // A "guess" sample: five options split almost evenly.
-  const vague = confidenceOf({ planning: 0.25, waiting: 0.22, implementing: 0.2, finished: 0.18, selfchecking: 0.15 }, "planning")
-  // Confidences measured on real sessions (all correct, varying certainty).
-  const manifest = [
-    confidenceOf({ planning: 0.62, selfchecking: 0.15, waiting: 0.12, finished: 0.08, conflict: 0.03 }, "planning"), // the 0.753 kind
-    confidenceOf({ finished: 0.45, waiting: 0.25, selfchecking: 0.2, planning: 0.06, conflict: 0.04 }, "finished"), // the 0.318 kind
-  ]
-  assert(vague < floor, `ambiguous ${vague.toFixed(3)} should be < ${floor}`)
-  for (const c of manifest) {
-    assert(c >= floor, `correct real sample ${c.toFixed(3)} should be >= ${floor}`)
-  }
-})
-
-await t("the 0.45 vs 0.3 trade-off is backed by real measurements", () => {
-  // Confidences measured on real sessions (six samples, all correct).
-  const samples = [0.753, 0.454, 0.529, 0.318, 0.498, 0.439]
-  const pass45 = samples.filter((c) => c >= 0.45).length
-  const pass30 = samples.filter((c) => c >= 0.3).length
-  // 0.45 would drop two correct results at 0.318 and 0.439.
-  assert(pass45 === 4, `floor 0.45 should pass 4, got ${pass45}`)
-  assert(pass30 === 6, `floor 0.3 should pass 6, got ${pass30}`)
+await t("the distribution is kept for later re-calibration", () => {
+  // A threshold that turns out wrong is only fixable if the raw numbers are in
+  // the log.
+  const probs = { a: 0.6, b: 0.4 }
+  const r = interpret(answer("a", probs), { confidenceFloor: 0.15 })
+  assert(r.probabilities === probs, "the distribution should ride along unchanged")
 })
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)

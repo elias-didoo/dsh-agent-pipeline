@@ -2,7 +2,7 @@
  * Client rendering, executed rather than pattern-matched.
  *
  * contracts.mjs checks client.js by reading its source. That catches a missing
- * registration but not a wrong label, a lost stage or a dictionary miss — those
+ * registration but not a wrong label, a lost decision point or a dictionary miss — those
  * only show up when the components actually run. This file builds a small React
  * stand-in, loads client.js through its real module-loader entry point, and
  * inspects the resulting tree.
@@ -54,18 +54,15 @@ function load(locale = "zh") {
   return { mod, def, getSlot: () => slot }
 }
 
-/** A projection view shaped exactly like models.host viewOf() produces. */
+/** A projection view shaped exactly like host.js viewOf() produces. */
 function projectionView(overrides = {}) {
   return {
     enabled: true,
-    rules: [
-      { id: "review", when: "planning", scene: "评审方案", action: "send", prompt: "请评审" },
-      { id: "confirm", when: "planning", scene: "等确认", action: "stop", notifyText: "需要拍板" },
-      { id: "orphan", when: "ghost", scene: "未定义阶段", action: "silent" },
-    ],
-    stages: [
-      { id: "planning", behavior: "sequence", label: { en: "Planning", zh: "方案阶段" } },
-      { id: "finished", behavior: "terminal", label: { en: "Finished", zh: "已完成" } },
+    decisions: [
+      { id: "bug_root", when: "用户在报 bug，根因还只是推测", do: "send", prompt: "是猜测还是有证据？", notifyText: "" },
+      { id: "review", when: "agent 刚给出技术方案", do: "send", prompt: "该读的文档和代码都去读", notifyText: "" },
+      { id: "confirm", when: "改动点已汇总，等用户决定", do: "stop", prompt: "", notifyText: "等你决定是否开干" },
+      { id: "quiet", when: "agent 正在改代码", do: "silent", prompt: "", notifyText: "" },
     ],
     ...overrides,
   }
@@ -198,65 +195,58 @@ await t("panel title carries the workspace name", () => {
 })
 
 await t("enabled state is shown", () => {
+  assert(textOf(mount()).includes("已启用"), `"已启用" not found`)
+})
+
+await t("every decision point is listed by its id", () => {
   const text = textOf(mount())
-  assert(text.includes("已启用"), `"已启用" not found`)
+  for (const id of ["bug_root", "review", "confirm", "quiet"]) {
+    assert(text.includes(id), `${id} missing from the panel`)
+  }
 })
 
-await t("a rule's action is translated, not shown as its raw enum", () => {
+await t("the when text is shown as written", () => {
+  // It is both the user's own label and the text the model matches against, so
+  // showing it verbatim is the most useful thing the panel can do.
   const text = textOf(mount())
-  assert(text.includes("自动发送提示词"), `send label missing`)
-  assert(text.includes("不做任何动作"), `silent label missing`)
-  assert(!text.includes("send") || text.includes("→ 请评审"), "raw enum leaked into the label")
+  assert(text.some((x) => x.includes("用户在报 bug，根因还只是推测")), "when text missing")
 })
 
-await t("a rule's prompt is rendered", () => {
+await t("an action is translated, not shown as its raw enum", () => {
   const text = textOf(mount())
-  assert(text.some((x) => x.includes("请评审")), `prompt missing`)
+  assert(text.includes("自动发送提示词"), "send label missing")
+  assert(text.includes("不做任何动作"), "silent label missing")
+  assert(text.includes("停下来等你"), "stop label missing")
 })
 
-await t("a stop rule's notifyText is rendered with its prefix", () => {
+await t("a send point's prompt is rendered", () => {
+  assert(textOf(mount()).some((x) => x.includes("是猜测还是有证据？")), "prompt missing")
+})
+
+await t("a stop point's notifyText is rendered with its prefix", () => {
+  assert(textOf(mount()).some((x) => x.includes("等你决定是否开干")), "notifyText missing")
+})
+
+console.log("\n=== 4. Order follows the config ===")
+
+await t("decision points render in the order the config lists them", () => {
+  // The list is the pipeline. Reordering it is how a user changes the flow, so
+  // the panel must not sort it.
   const text = textOf(mount())
-  assert(text.some((x) => x.includes("需要拍板")), `notifyText missing`)
+  const positions = ["bug_root", "review", "confirm", "quiet"].map((id) => text.indexOf(id))
+  assert(positions.every((p) => p >= 0), "every id should appear")
+  const sorted = [...positions].sort((a, b) => a - b)
+  assert(positions.join(",") === sorted.join(","), `out of order: ${positions.join(",")}`)
 })
 
-console.log("\n=== 4. Stages come from the projection ===")
-
-await t("a defined stage renders its label, not its id", () => {
-  const text = textOf(mount())
-  assert(text.includes("方案阶段"), `stage label missing; got ${JSON.stringify(text)}`)
-})
-
-await t("the label follows the panel language", () => {
-  const zh = textOf(mount({ locale: "zh" }))
-  const en = textOf(mount({ locale: "en" }))
-  assert(zh.includes("方案阶段"), "zh should use the zh label")
-  assert(en.includes("Planning"), "en should use the en label")
-  assert(!en.includes("方案阶段"), "en must not fall back to the zh label")
-})
-
-await t("an undefined stage is grouped separately, with a label", () => {
-  const text = textOf(mount())
-  assert(text.includes("阶段未识别"), `unknown group label missing`)
-})
-
-await t("a rule pointing at an undefined stage is still rendered", () => {
-  const text = textOf(mount())
-  assert(text.some((x) => x.includes("未定义阶段")), "the orphan rule should still show its scene")
-})
-
-await t("an empty stage list does not crash and flags everything as unknown", () => {
-  const text = textOf(mount({ view: projectionView({ stages: [] }) }))
-  assert(text.includes("阶段未识别"), "should group everything as unknown")
+await t("a workspace with no decision points says so", () => {
+  const text = textOf(mount({ view: projectionView({ decisions: [] }) }))
+  assert(text.some((x) => x.includes("尚未配置决策点")), `got ${JSON.stringify(text.slice(0, 6))}`)
 })
 
 await t("a disabled workspace renders its own message", () => {
   const text = textOf(mount({ view: projectionView({ enabled: false }) }))
   assert(text.some((x) => x.includes("未启用")), `got ${JSON.stringify(text.slice(0, 6))}`)
-})
-
-await t("a workspace with no rules renders its own message", () => {
-  const text = textOf(mount({ view: projectionView({ rules: [] }) }))
-  assert(text.some((x) => x.includes("尚未配置规则")), `got ${JSON.stringify(text.slice(0, 6))}`)
 })
 
 console.log("\n=== 5. Degradation without the locale service ===")

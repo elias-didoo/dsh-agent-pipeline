@@ -33,18 +33,18 @@ function makeConfig(overrides = {}) {
   return {
     model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 5000 },
     defaults: {
-      maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.3,
+      maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.15,
       humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3,
       ...overrides,
     },
     workspaces: [{
       path: WS,
       enabled: true,
-      rules: [
-        { id: "selfcheck_1", when: "selfchecking", scene: "s", action: "send", prompt: "请继续。", notifyText: "" },
-        { id: "selfcheck_2", when: "selfchecking", scene: "s", action: "send", prompt: "继续第二轮。", notifyText: "" },
-        { id: "needs_user_input", when: "waiting", scene: "需要用户决定", action: "stop", prompt: "", notifyText: "需要你拍板" },
-        { id: "finished", when: "finished", scene: "已完成", action: "stop", prompt: "", notifyText: "已完成" },
+      decisions: [
+        { id: "selfcheck_1", when: "用户刚说开干，agent 已改完代码，插件还没发过自检要求", do: "send", prompt: "请继续。", notifyText: "" },
+        { id: "selfcheck_2", when: "插件发过第一轮自检，agent 已回复检查结果", do: "send", prompt: "继续第二轮。", notifyText: "" },
+        { id: "needs_user_input", when: "agent 在正文里直接向用户提问、请求批准或索要信息", do: "stop", prompt: "", notifyText: "需要你拍板" },
+        { id: "finished", when: "agent 已推送完成，或明确宣告需求全部结束", do: "stop", prompt: "", notifyText: "已完成" },
       ],
     }],
   }
@@ -294,14 +294,21 @@ await t("paused but the user has spoken → unpause and continue", async () => {
     turnEnd: turnEnd(), config: makeConfig(),
     state: { awaitingRuleId: "needs_user_input" }, mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
-  // After unpausing, judging continues. On a vague reply the model may pick any
-  // stage, or fall to UNCERTAIN on low confidence — but on every path a
-  // non-empty awaitingRuleId must remain, or the next turn would stop again.
+  // After unpausing, judging continues. Which decision point the model lands on
+  // depends on how it reads a vague reply, so the assertion is on the invariant
+  // rather than on a particular id: a send must never carry a pause, and any
+  // pause that is set must name a real decision point or the uncertain marker.
   assert(r.skipped !== "awaiting-user", `should have unpaused: ${JSON.stringify(r)}`)
-  assert(
-    mutated?.awaitingRuleId === "needs_user_input" || mutated?.awaitingRuleId === "uncertain",
-    `should re-enter the paused state, got ${JSON.stringify(mutated)}`,
-  )
+  if (r.action === "send") {
+    assert(!mutated?.awaitingRuleId, `a send must not pause: ${JSON.stringify(mutated)}`)
+  } else {
+    assert(
+      mutated?.awaitingRuleId === "needs_user_input"
+        || mutated?.awaitingRuleId === "finished"
+        || mutated?.awaitingRuleId === "uncertain",
+      `should pause at a known point, got ${JSON.stringify(mutated)}`,
+    )
+  }
 })
 
 await t("an action=stop rule → no message, only the paused state", async () => {
@@ -322,7 +329,7 @@ await t("an action=stop rule → no message, only the paused state", async () =>
     assert(agent.sent.length === 0, `stop must not send, but ${agent.sent.length} message(s) went out`)
     assert(mutated?.awaitingRuleId === "needs_user_input", "should enter the paused state")
   } else {
-    // The model landing on another stage is legitimate; still at most one send.
+    // The model landing on another decision point is legitimate; still at most one send.
     assert(agent.sent.length <= 1, "at most one message")
   }
 })
@@ -340,7 +347,7 @@ await t("iterations hit the cap → stop", async () => {
   assert(mutated?.stoppedReason?.includes("iteration-limit"), "should record a stop reason")
 })
 
-console.log("\n=== 5c. The stage machine fires each rule once ===")
+console.log("\n=== 5c. Each decision point fires at most once ===")
 await t("the same state repeatedly triggered never resends the same prompt", async () => {
   // pickRule advances by byRuleId, and a send rule is never returned again
   // once fired — so the same prompt cannot go out twice.
@@ -413,7 +420,7 @@ await t("iterations only grow: the session stops at the cap", async () => {
   // A long-lived session reused across tasks therefore accumulates; only a DSH
   // restart resets it (it lives in an in-process WeakMap).
   // Preset iterations in state to hit the cap branch directly, instead of
-  // relying on the model picking a particular stage.
+  // relying on the model picking a particular decision point.
   const agent = makeAgent()
   let mutated = null
   const r = await handleTurnEnd({

@@ -42,13 +42,12 @@ window.__ModuleLoader__.load({
         "action.send": "自动发送提示词",
         "action.stop": "停下来等你",
         "action.silent": "不做任何动作",
-        "stage.unknown": "阶段未识别",
         "rule.noId": "(无 id)",
         "rule.stopPrefix": "停下：",
         "status.enabled": "已启用",
         "status.disabled": "未启用",
         "meta.noSession": "此工作区尚无会话，规则状态需先建一个会话才可见",
-        "empty.noRules": "尚未配置规则",
+        "empty.noDecisions": "尚未配置决策点",
         "empty.notEnabled": "此工作区未启用决策编排",
         "hint.title": "如何修改",
         "hint.body": "编辑 cordis.patch.yml 中本插件的 config，改完重启 DSH 生效。",
@@ -60,13 +59,12 @@ window.__ModuleLoader__.load({
         "action.send": "Send prompt automatically",
         "action.stop": "Stop and wait for you",
         "action.silent": "Do nothing",
-        "stage.unknown": "Unrecognized stage",
         "rule.noId": "(no id)",
         "rule.stopPrefix": "Stops: ",
         "status.enabled": "Enabled",
         "status.disabled": "Not enabled",
         "meta.noSession": "No session in this workspace yet — rule state appears once one exists",
-        "empty.noRules": "No rules configured yet",
+        "empty.noDecisions": "No decision points configured yet",
         "empty.notEnabled": "Decision orchestration is not enabled for this workspace",
         "hint.title": "How to change these",
         "hint.body": "Edit this plugin's config in cordis.patch.yml, then restart DSH.",
@@ -122,8 +120,6 @@ window.__ModuleLoader__.load({
 .do-warn{color:#d9a441}
 .do-empty{padding:20px 0;color:var(--dsw-alias-text-secondary,#999)}
 .do-rules{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
-.do-stage{font-size:12px;font-weight:600;color:var(--dsw-alias-text-secondary,#999);margin-top:6px;padding-left:2px}
-.do-stage-unknown{color:var(--dsw-alias-text-warning,#e0a030)}
 .do-rule{border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:8px;padding:10px 12px;background:var(--dsw-alias-background-secondary,rgba(255,255,255,.03))}
 .do-rule-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .do-rule-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--dsw-alias-text-link,#6aa8ff)}
@@ -137,71 +133,29 @@ window.__ModuleLoader__.load({
 `
 
     /**
-     * Stage label for the active language, falling back to the raw id.
+     * Render one decision point.
      *
-     * Mirrors `stageLabel` in lib/stages.js. It cannot import it: this file is
-     * a browser artifact loaded through the module loader, while lib/ is the
-     * Host half. Keep the two in step — the Host sends `label` as `{ en, zh }`
-     * and this is the only place that picks one.
+     * The `when` text is shown as written: it is both the label the user gave it
+     * and the description the model matches against, so showing it is the most
+     * useful thing the panel can do.
      */
-    function stageLabel(stage, locale) {
-      return stage?.label?.[locale] ?? stage?.label?.en ?? stage?.id ?? ""
-    }
-
-    /**
-     * Render rules grouped by stage.
-     *
-     * Stage order and names come from the projection, so user-defined stages
-     * appear the same way built-in ones do. A rule pointing at a stage that is
-     * not defined gets its own group instead of being silently folded into a
-     * known one: a typo in `when` should be visible, not quietly relocated.
-     */
-    function renderStages(rules, stages, t, locale) {
-      const list = Array.isArray(rules) ? rules : []
-      const order = Array.isArray(stages) ? stages : []
-      const known = new Set(order.map((s) => s.id))
-      const byStage = new Map()
-      const unknown = []
-      for (const r of list) {
-        const st = r?.when
-        if (known.has(st)) {
-          if (!byStage.has(st)) byStage.set(st, [])
-          byStage.get(st).push(r)
-        } else {
-          unknown.push(r)
-        }
-      }
-
-      const out = []
-      for (const stage of order) {
-        const group = byStage.get(stage.id)
-        if (!group || group.length === 0) continue
-        out.push(h("div", { className: "do-stage", key: stage.id }, stageLabel(stage, locale)))
-        for (const r of group) out.push(renderRule(r, t))
-      }
-      if (unknown.length > 0) {
-        out.push(h("div", { className: "do-stage do-stage-unknown", key: "__unknown" }, t("stage.unknown")))
-        for (const r of unknown) out.push(renderRule(r, t))
-      }
-      return out
-    }
-
-    function renderRule(r, t) {
+    function renderDecision(d, t) {
+      const action = d?.do ?? "silent"
       return h(
         "div",
-        { className: "do-rule", key: r.id },
+        { className: "do-rule", key: d.id },
         h(
           "div",
           { className: "do-rule-head" },
-          h("code", { className: "do-rule-id" }, r.id ?? t("rule.noId")),
-          h("span", { className: "do-rule-action" }, t(`action.${r.action}`)),
+          h("code", { className: "do-rule-id" }, d.id ?? t("rule.noId")),
+          h("span", { className: "do-rule-action" }, t(`action.${action}`)),
         ),
-        h("div", { className: "do-rule-scene" }, r.scene ?? ""),
-        r.action === "send" && r.prompt
-          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${r.prompt}`)
+        h("div", { className: "do-rule-scene" }, d.when ?? ""),
+        action === "send" && d.prompt
+          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${d.prompt}`)
           : null,
-        r.action === "stop" && r.notifyText
-          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${t("rule.stopPrefix")}${r.notifyText}`)
+        action === "stop" && d.notifyText
+          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${t("rule.stopPrefix")}${d.notifyText}`)
           : null,
       )
     }
@@ -214,8 +168,7 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener("keydown", onKey)
       }, [onClose])
 
-      const rules = info?.rules ?? []
-      const stages = info?.stages ?? []
+      const decisions = info?.decisions ?? []
       const enabled = info?.enabled === true
 
       return h(
@@ -248,9 +201,9 @@ window.__ModuleLoader__.load({
               : null,
           ),
 
-          rules.length === 0
-            ? h("div", { className: "do-empty" }, enabled ? t("empty.noRules") : t("empty.notEnabled"))
-            : h("div", { className: "do-rules" }, ...renderStages(rules, stages, t, locale)),
+          decisions.length === 0
+            ? h("div", { className: "do-empty" }, enabled ? t("empty.noDecisions") : t("empty.notEnabled"))
+            : h("div", { className: "do-rules" }, ...decisions.map((d) => renderDecision(d, t))),
 
           h(
             "div",
@@ -337,8 +290,7 @@ window.__ModuleLoader__.load({
                       workspaceId,
                       displayTitle,
                       enabled: view?.enabled === true,
-                      rules: Array.isArray(view?.rules) ? view.rules : [],
-                      stages: Array.isArray(view?.stages) ? view.stages : [],
+                      decisions: Array.isArray(view?.decisions) ? view.decisions : [],
                       hasSession: found !== undefined,
                     })
                   }

@@ -2,7 +2,7 @@
  * Context construction: budget allocation and last-message priority.
  *
  * Almost all signal lives in the agent's last reply: on identical input, 120
- * characters picked the wrong stage while the full text picked the right one.
+ * characters picked the wrong answer while the full text picked the right one.
  * So the last message must get budget first — but when it is enormous it must
  * not swallow the history either, or anchors like "go ahead" are lost.
  */

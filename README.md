@@ -52,44 +52,23 @@ you ask → agent works → agent stops
                           ↓
               plugin reads the agent's last reply + the previous few turns
                           ↓
-              local model picks one of the stages
+              local model picks the decision point that fits
                           ↓
-              plugin counts its own messages in the log to know
-              how far into that stage we are
+              plugin checks the log: has this one already fired?
                           ↓
         ┌─────────────────┼─────────────────┐
       send            stop and wait      do nothing
 ```
 
-**Why the split.** The model is good at "are we still discussing the plan, or already editing code?" It cannot tell "is this the second or the third self-check round" — that information is not in the conversation text. So stages go to the model, ordering goes to a counter.
+**Why the split.** Choosing what the situation is belongs to the model: it reads
+the conversation, including the plugin's own messages, and matches it against
+the `when` text you wrote. Remembering what has already happened belongs to the
+plugin: it counts its own messages in the log, which is exact and costs nothing.
 
-## Stages
+Neither half guesses at the other's job. The model is never asked to keep score,
+and the plugin never tries to interpret prose.
 
-A stage answers one question: which part of the work is the agent in right now?
-Its `behavior` decides what the plugin does once that is known.
-
-The stages below are **defaults**. A workspace may replace the whole list — see
-[Customizing stages](#customizing-stages).
-
-| Stage | Behavior | Meaning |
-|---|---|---|
-| `planning` | `sequence` | Requirements or design under discussion; no code touched yet |
-| `implementing` | `passive` | Code is being edited |
-| `selfchecking` | `sequence` | Code changes done, self-check in progress |
-| `waiting` | `terminal` | Agent stopped and is explicitly waiting on you |
-| `finished` | `terminal` | Work is fully done (pushed, or explicitly declared complete) |
-| `conflict` | `once` | Rebase/merge hit conflicts |
-
-### The four behaviors
-
-| Behavior | What happens |
-|---|---|
-| `sequence` | Fire the stage's `send` rules in config order, one per visit. Once all have fired, hand over to the stage's `stop` rule. |
-| `once` | Fire the first unfired `send` rule, then stop selecting for this stage. |
-| `terminal` | Never send — fire the `stop` rule so auto-advance halts and waits for you. |
-| `passive` | Do nothing. For stages where the agent is working and must not be nudged. |
-
-## Configuring rules
+## Configuring decision points
 
 Edit this plugin's `config` inside `~/.dsh/profiles/desktop/cordis.patch.yml`:
 
@@ -103,171 +82,100 @@ Edit this plugin's `config` inside `~/.dsh/profiles/desktop/cordis.patch.yml`:
     workspaces:
       - path: /Users/you/project
         enabled: true
-        rules:
-          # ── planning: each fires once, in order ──
+        decisions:
           - id: bug_root
-            when: planning
-            scene: user reported a bug, agent investigated but the root cause is still a guess, no evidence yet
-            action: send
+            when: The user reported a bug and the agent has investigated, but the root cause is still a guess and the plugin has not yet asked for evidence.
+            do: send
             prompt: Is that a guess or a proven root cause? If you need anything from the browser console, go get it yourself — the CDP and login scripts are already there.
 
           - id: review
-            when: planning
-            scene: user has not said "go" yet, agent just produced a technical plan or assessment
-            action: send
-            prompt: Read the docs and code you actually need. Double-check whether the assessment is complete and whether it affects anything else. Is this plan the best experience for users? Is the architecture sound, elegant and simple? Is the code idiomatic? Is anything over-engineered? Does it match the project's documented direction and philosophy? Get it right in one pass, leave no technical debt, do not worry about migrating old data. Assessment only — do not touch the repo. Do not stop halfway to ask whether to continue; answer once you are certain. Documentation is a reference, not gospel — think independently about what is actually right. Search for industry best practice when unsure…
+            when: The agent just produced a technical plan or assessment and the plugin has not yet sent its review request.
+            do: send
+            prompt: Read the docs and code you actually need. Double-check whether the assessment is complete…
 
           - id: summarize
-            when: planning
-            scene: second-pass review done, needs a consolidated change list
-            action: send
+            when: The plugin already sent its review request and the agent has answered it, but the plugin has not yet asked for a consolidated list.
+            do: send
             prompt: List every change you plan to make, with all the important points.
 
-          - id: need_confirm
-            when: planning
-            scene: change list delivered, waiting for the user to decide whether to start
-            action: stop
+          - id: confirm
+            when: The agent has listed its planned changes and is waiting for the user to decide whether to start.
+            do: stop
             notifyText: Plan is ready — your call whether to start.
 
-          # ── selfchecking: fixed four steps ──
-          - id: selfcheck_1
-            when: selfchecking
-            scene: code changes complete, no self-check yet
-            action: send
-            prompt: Carefully review every file you just changed. Did everything planned get done? Did you touch anything out of scope? Did you introduce new problems? Is anything over-engineered? Are comments and docs up to the project's conventions? Fix what you find. What errors and warnings does the type check, lint and build report?…
-
-          - id: selfcheck_2
-            when: selfchecking
-            scene: first self-check round finished
-            action: send
-            prompt: Are the problems actually fixed? Fix whatever is still broken.
-
-          - id: selfcheck_3
-            when: selfchecking
-            scene: second self-check round finished
-            action: send
-            prompt: Every self-check round finds something new. Do you think another round is worth it? What would you focus on, and how?
-
-          - id: push
-            when: selfchecking
-            scene: all three self-check rounds done
-            action: send
-            prompt: Push
-
-          # ── other stages ──
-          - id: conflict
-            when: conflict
-            scene: rebase or merge onto latest head hit conflicts
-            action: send
-            prompt: Were there conflicts when you rebased/merged onto latest head? How did you resolve them?
-
-          - id: waiting
-            when: waiting
-            scene: agent stopped and is waiting for a user decision
-            action: stop
-            notifyText: Needs your attention.
-
           - id: finished
-            when: finished
-            scene: work pushed, or agent explicitly declared everything complete
-            action: stop
-            notifyText: Request complete.
+            when: The work is pushed (the reply contains HEAD -> main) or the agent has explicitly declared the task complete.
+            do: stop
+            notifyText: Work is done.
 ```
 
-### Rule fields
+## Anatomy of a decision point
 
-| Field | Description |
-|---|---|
-| `id` | Rule identifier, unique within a workspace |
-| `when` | **Which stage this rule belongs to** — a defined stage id (the six above, or your own) |
-| `scene` | Human-readable description, helps you remember when it applies (not sent to the model) |
-| `action` | `send` auto-send / `stop` wait for you / `silent` do nothing |
-| `prompt` | Required when `action: send` |
-| `notifyText` | Optional; shown in the panel to explain what this rule stops on |
+A decision point is one thing the plugin may do next. The model reads the
+conversation and picks whichever one describes the situation; the plugin
+carries it out.
 
-### Ordering within a stage
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | Stable name. Also the tag on the message it sends. |
+| `when` | yes | **The situation this applies to, in words.** This is the model's input. |
+| `do` | yes | `send` a message, `stop` and wait for the user, or `silent` do nothing. |
+| `prompt` | for `send` | The message text. |
+| `notifyText` | no | Panel label explaining what a `stop` means. |
 
-**`send` rules sharing the same `when` fire once each, in config order.**
+There is no stage list, no behaviour table and no condition expression. `when`
+is prose because the model is better at recognising "the agent still says it
+found problems" than any pattern would be.
 
-- `planning`: `bug_root` → `review` → `summarize`, then `need_confirm` stops.
-- `selfchecking`: `selfcheck_1` → `selfcheck_2` → `selfcheck_3` → `push`, then stop.
+### Ordering
 
-Ordering comes from **counting messages already in the log**, not from the model, so it is exact.
+**Decision points fire once each.** Order in the config does not sequence them
+— the model picks by situation, not by position. What order affects is only how
+the list reads in the panel.
 
-## Customizing stages
+The plugin guarantees a `send` never repeats: it counts the messages it has
+already sent, by `id`, and refuses to send the same one twice. A `stop` halts
+auto-advance once and then stays quiet until the user speaks again.
 
-Stages are data. Add one, drop one, or rename one — nothing in the pipeline
-branches on a stage id.
+### Writing `when` that works
 
-Define `stages` and the built-in list is replaced **wholesale**:
+The model separates situations by the boundaries between them, and it can only
+use what is in the conversation. Two rules, both measured:
+
+**Quote what the plugin already sent.** The conversation contains the plugin's
+own messages, so name them by their opening words:
 
 ```yaml
-    stages:
-      - id: intake
-        behavior: sequence
-        label: { en: "Intake", zh: "接需求" }
-        criteria: 用户刚提出需求，agent 还在确认要做什么
-      - id: coding
-        behavior: passive
-        label: { en: "Coding", zh: "写代码" }
-        criteria: agent 正在修改代码文件
-      - id: handover
-        behavior: terminal
-        label: { en: "Handover", zh: "交接" }
-        criteria: agent 已经推送完成，或明确宣告需求结束
-
-    workspaces:
-      - path: /Users/you/project
-        enabled: true
-        rules:
-          - id: clarify
-            when: intake        # ← refers to your stage id
-            scene: 需求还不清楚
-            action: send
-            prompt: 你想改哪个页面？
-          - id: confirm
-            when: intake
-            scene: 需求已确认
-            action: stop
-          - id: done
-            when: handover
-            scene: 已完成
-            action: stop
+- id: summarize
+  when: The review request「Read the docs and code you actually need」has already
+        appeared, and the agent just replied to it — but the agent's reply is a
+        review conclusion, not a numbered list.
+- id: confirm
+  when: The plugin's「List every change you plan to make」message has appeared,
+        and the agent's reply is a numbered list of changes.
 ```
 
-### What each field needs
+Without those quotes the two entries are nearly identical to the model. With
+them, one scenario went from 14.8% to 51.1% confidence on the right answer.
 
-| Field | Required | Notes |
-|---|---|---|
-| `id` | yes | Unique. This is what a rule's `when` refers to. |
-| `behavior` | yes | One of `sequence`, `once`, `terminal`, `passive`. |
-| `label.en` / `label.zh` | yes | Shown in the panel; the client picks by UI language. |
-| `criteria` | yes | The description sent to the model. **Chinese works best** — see below. |
+**Describe what the reply looks like, not just what happened.** "The agent
+produced a plan" fits both before and after the review. "A numbered list of
+changes" is something only the summarised reply has.
 
-### Two things validation enforces
+Write them in whatever language you configured the rules in. Chinese and English
+both work.
 
-**At least one `terminal` stage.** Without one, a `sequence` stage that has
-fired all its rules has nowhere to hand over, so every later turn would log a
-skip and the pipeline would never settle.
+### The cost of more decision points
 
-**Every stage needs `criteria`.** The model picks a stage by matching the
-conversation against those descriptions. A stage with vague criteria is a stage
-the model will never choose.
+Every decision point is an option for the model, and more options make adjacent
+descriptions harder to tell apart. Measured on a twelve-point set: removing a
+single unrelated entry — one that describes a situation nowhere in the
+conversation — flipped a correct answer to its neighbour, because it diluted the
+field.
 
-### Writing criteria that actually work
-
-The model separates stages by the boundaries between them, not by the stage
-names. Two things measurably help:
-
-- **State what distinguishes a stage from its neighbours**, not just what it is.
-- **Write them in Chinese.** On nine scenarios from real sessions, Chinese
-  criteria scored 8/9 while English translations of the same descriptions
-  scored 5/9 and fell below the confidence floor on short replies. Cross-checks
-  showed the criteria language is what matters, not the transcript language.
-
-After adding a stage, exercise it: run a session that reaches it and check the
-log shows the new stage being picked. `judge` events carry the stage and its
-confidence.
+So when a set stops working, the fix is usually to sharpen the two entries that
+sit next to each other, not to add more of them. A workspace with a dozen
+decision points needs more distinct `when` texts than one with three.
 
 ## Language
 
@@ -282,24 +190,30 @@ The panel reads the language from DSH settings, so it matches the rest of the
 UI without extra configuration. If you have never explicitly picked a language
 in DSH, the plugin falls back to English.
 
-The criteria stay Chinese for the reason above: the model separates stages far
+The criteria stay Chinese for the reason above: the model separates situations far
 more reliably in Chinese. They are model input, not documentation.
 
 ## Confidence
 
-The model returns a probability distribution. The plugin uses a **normalized confidence**:
+The model returns a probability for each option. Confidence is the probability it
+put on the one it chose — raw `p_max`, nothing rescaling it.
 
-```
-normalized = (p_max - 1/n) / (1 - 1/n)
-```
+Below `confidenceFloor` (default `0.15`) the plugin does nothing: it logs
+`uncertain` and pauses automatic advancement. A turn where the conversation
+does not clearly match any decision point therefore produces no action, which is
+the intended outcome.
 
-This maps "pure guess" to 0 and "certain" to 1.
+**Why not normalize.** An earlier version mapped the random baseline `1/n` to 0
+so a fixed threshold would mean the same thing at any option count. That held up
+with six options and failed with eleven: correct answers normalised to 0.06–0.41
+while outright guesses landed at 0.04–0.06, overlapping, so no threshold
+separated them. Raw `p_max` did separate them — correct answers at 0.21 and
+above, guesses at 0.14 and below.
 
-**Why normalize.** Raw `p_max` means different things at different option counts — a guess is 0.5 with two options but 0.167 with six. Without normalization, a fixed threshold drifts with the number of stages.
-
-**So the plugin always sends every defined stage to the model**, never trimming to the ones you configured. Otherwise the option count varies per workspace and the same 0.5 would mean different things. Stages you have no rules for simply never get selected.
-
-Below `confidenceFloor` (default 0.3) the plugin does nothing: it logs `uncertain` and pauses automatic advancement.
+**The cost of that choice:** the meaningful range depends on how many decision
+points a workspace defines. The default suits roughly ten; a workspace with far
+more options may need a lower floor. Every `judge` log entry carries the full
+distribution, so the floor can be re-calibrated from real sessions.
 
 ## Global settings
 
@@ -307,14 +221,14 @@ Below `confidenceFloor` (default 0.3) the plugin does nothing: it logs `uncertai
     defaults:
       maxIterations: 20        # max auto-advance rounds per session
       failureRetryLimit: 3     # stop after this many consecutive errors (network + judge share the counter)
-      confidenceFloor: 0.3     # normalized confidence threshold
+      confidenceFloor: 0.15    # raw p_max threshold
       humanCooldownMs: 30000   # stay quiet this long after you speak
       quietWindowMs: 30000     # stay quiet this long after another agent relays
       contextBudgetRatio: 0.7  # fraction of the model window to use
       maxTurns: 3              # how many turns back to look
 ```
 
-**Context budget.** The agent's last reply is always kept whole; only earlier turns get truncated to fit. Measured: with the same input, 120 characters of context produced a wrong stage, the full text produced the right one.
+**Context budget.** The agent's last reply is always kept whole; only earlier turns get truncated to fit. Measured: with the same input, 120 characters of context produced a wrong answer, the full text produced the right one.
 
 ## Arbitration: when the plugin stays out of the way
 
@@ -355,7 +269,7 @@ This does not conflict with `dsh-llm-retry`: that is a system-level reconnect, w
 
 ## Viewing rules
 
-Right-click a workspace in the left sidebar → **Decision rules…** → rules listed grouped by stage.
+Right-click a workspace in the left sidebar → **Decision rules…** → every decision point in config order, each with its `when` text.
 
 Edit `cordis.patch.yml` to change them; restart DSH to apply.
 
@@ -368,7 +282,7 @@ Messages the plugin sends carry `source.kind = "decision"`, keeping them distinc
 - they do not trigger session-title generation
 - they do not reset duplicate-tool-call protection
 - they are not mistaken for human activity, so the plugin cannot suppress itself
-- the plugin counts them in the log to derive stage progress
+- the plugin counts them in the log to know which points have fired
 
 ## Reading the log
 
@@ -383,8 +297,8 @@ tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 |---|---|
 | `apply` / `projection-ready` | Plugin mounted, projection ready |
 | `locale` | UI language resolved for this process |
-| `judge` | One judgement; includes `stage`, `confidence`, `rawConfidence` |
-| `pick` | Which rule was selected; includes `stage`, `ruleId`, `progress` |
+| `judge` | One judgement; includes `decision`, `confidence`, full `probabilities` |
+| `pick` | Which decision point was selected; includes `decision`, `progress` |
 | `halt` | A stop rule fired; auto-advance paused. `ruleId` says which |
 | `stop` | Terminated by an error or the iteration limit. `why` says why |
 | `uncertain` | Confidence below the floor, no judgement made |
@@ -407,7 +321,7 @@ node test/all.mjs --fast   # skip the live-model suite
 | `contracts.mjs` | DSH runtime contracts, inject coverage, zero external deps |
 | `apply.mjs` | Projection wiring and schemas |
 | `context.mjs` | Context budget, last-message priority, source labels |
-| `confidence.mjs` | Confidence normalization and threshold behaviour |
+| `confidence.mjs` | Confidence (raw p_max) and the uncertain path |
 | `phase.mjs` | Stage progress derivation + `pickRule` lookup |
 | `flow.mjs` | Every branch of the main loop |
 | `e2e-kev.mjs` | End-to-end against a live model |
@@ -418,4 +332,4 @@ node test/all.mjs --fast   # skip the live-model suite
 tail -20 ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 ```
 
-Key `ev` values: `judge` (stage and confidence), `pick` (which rule), `send`, `skip` (held back — see `why`), `halt` (paused by a stop rule), `stop` (terminated by an error or limit).
+Key `ev` values: `judge` (decision and confidence), `pick` (which decision point), `send`, `skip` (held back — see `why`), `halt` (paused by a stop point), `stop` (terminated by an error or limit).

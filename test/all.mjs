@@ -23,13 +23,13 @@ const fast = process.argv.includes("--fast")
 
 const suites = [
   ["contracts.mjs", "DSH runtime contracts (projection/slots/ModuleLoader/v4 sources)"],
-  ["client.mjs", "Client rendering (menu, panel, stages, language)"],
+  ["client.mjs", "Client rendering (menu, panel, decisions, language)"],
   ["readme.mjs", "README examples stay runnable"],
   ["apply.mjs", "apply() wiring (projection registration and schemas)"],
   ["context.mjs", "Context budget and last-message priority"],
-  ["confidence.mjs", "Confidence normalization"],
-  ["stages.mjs", "Stage definitions and behavior contract"],
-  ["phase.mjs", "Stage machine (progress derivation + pickRule)"],
+  ["confidence.mjs", "Confidence (raw p_max) and the uncertain path"],
+  ["decisions.mjs", "Decision points: contract, question, validation"],
+  ["progress.mjs", "Progress derivation, idempotency, serial queue"],
   ["flow.mjs", "Main loop branches (fake ctx, never the real host)"],
   ["e2e-kev.mjs", "Live model end-to-end", !fast],
 ]

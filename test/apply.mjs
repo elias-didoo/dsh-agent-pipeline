@@ -7,9 +7,9 @@ const host = await import("../host.js")
 const config = {
   model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
   defaults: { maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.3, humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3 },
-  workspaces: [{ path: "/tmp/dsh-decision-orchestrator-test-workspace", enabled: true, rules: [
-    {id:"r1",when:"planning",scene:"s1",action:"send",prompt:"p1",notifyText: ""},
-    {id:"r2",when:"waiting",scene:"s2",action:"stop",prompt:"",notifyText:"等你"},
+  workspaces: [{ path: "/tmp/dsh-decision-orchestrator-test-workspace", enabled: true, decisions: [
+    {id:"r1",when:"agent 刚给出方案",do:"send",prompt:"p1",notifyText: ""},
+    {id:"r2",when:"agent 提问等你回答",do:"stop",prompt:"",notifyText:"等你"},
   ]}],
 }
 
@@ -43,30 +43,32 @@ t("projection has every required field", () => {
 })
 t("stateSchema parses the initial state", () => {
   const s = registered.stateSchema.parse(registered.init({ cwd: "/x" }, 0))
-  assert(typeof s.rulesEnabled === "boolean", "rulesEnabled")
-  assert(Array.isArray(s.rulesView), "rulesView")
+  assert(typeof s.enabled === "boolean", "enabled")
+  assert(Array.isArray(s.decisionsView), "decisionsView")
 })
 t("init carries the workspace rules", () => {
   const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
-  assert(s.rulesEnabled === true, "rulesEnabled should be true")
-  assert(s.rulesView.length === 2, `rulesView should hold 2 entries, got ${s.rulesView.length}`)
+  assert(s.enabled === true, "enabled should be true")
+  assert(s.decisionsView.length === 2, `decisionsView should hold 2 entries, got ${s.decisionsView.length}`)
 })
-t("rulesView carries every field the client needs to group and render", () => {
-  // The client groups on `when` and displays `notifyText`; losing either
+t("decisionsView carries every field the client needs to render", () => {
+  // The client shows `when` verbatim and `notifyText` for a stop; losing either
   // degrades silently.
   const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
-  const r1 = s.rulesView.find((r) => r.id === "r1")
+  const r1 = s.decisionsView.find((r) => r.id === "r1")
   assert(r1, "r1 not found")
-  assert(r1.when === "planning", `when should be planning, got ${r1.when}`)
-  const r2 = s.rulesView.find((r) => r.id === "r2")
-  assert(r2.when === "waiting", `when should be waiting, got ${r2.when}`)
+  assert(r1.when === "agent 刚给出方案", `when lost: ${r1.when}`)
+  assert(r1.do === "send", `do should be send, got ${r1.do}`)
+  assert(r1.prompt === "p1", `prompt lost: ${r1.prompt}`)
+  const r2 = s.decisionsView.find((r) => r.id === "r2")
+  assert(r2.do === "stop", `do should be stop, got ${r2.do}`)
   assert(r2.notifyText === "等你", `notifyText should be 等你, got ${r2.notifyText}`)
 })
 t("view output passes viewSchema", () => {
   const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
   const v = registered.wire.viewSchema.parse(registered.wire.view(s))
   assert(v.enabled === true, "enabled")
-  assert(Array.isArray(v.rules) && v.rules.length === 2, "rules")
+  assert(Array.isArray(v.decisions) && v.decisions.length === 2, "decisions")
 })
 t("apply returns the same reference for non turn/end events", () => {
   const s = { failures: 0 }
@@ -116,16 +118,17 @@ await t("viewSchema preserves every field viewOf produces", () => {
   }
 })
 
-await t("the view carries stage definitions, not just rules", () => {
-  // Without stages the client cannot group rules by stage at all.
-  const initial = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
-  const view = registered.wire.viewSchema.parse(registered.wire.view(initial))
-  assert(Array.isArray(view.stages), "view.stages must be an array")
-  assert(view.stages.length > 0, "view.stages must not be empty for an enabled workspace")
-  for (const st of view.stages) {
-    assert(typeof st.id === "string" && st.id.length > 0, "each stage needs an id")
-    assert(st.label && st.label.en && st.label.zh, `stage ${st.id} needs both labels`)
-    assert(typeof st.behavior === "string", `stage ${st.id} needs a behavior`)
+await t("the view carries the decision points themselves", () => {
+  // Without them the panel has nothing to render — the projection would show a
+  // workspace as enabled with no content.
+  const s = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
+  const v = registered.wire.viewSchema.parse(registered.wire.view(s))
+  assert(Array.isArray(v.decisions), "view.decisions must be an array")
+  assert(v.decisions.length > 0, "view.decisions must not be empty for an enabled workspace")
+  for (const d of v.decisions) {
+    assert(typeof d.id === "string" && d.id.length > 0, "each decision needs an id")
+    assert(typeof d.when === "string" && d.when.length > 0, `decision ${d.id} needs when`)
+    assert(["send", "stop", "silent"].includes(d.do), `decision ${d.id} has a bad do`)
   }
 })
 

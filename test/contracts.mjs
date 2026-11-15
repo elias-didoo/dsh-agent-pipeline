@@ -101,43 +101,29 @@ await t("every ctx.<service> used is declared in inject", () => {
   assert(missing.length === 0, `inject is missing: ${missing.join(", ")}`)
 })
 
-console.log("\n=== 4c. client holds no stage or action table of its own ===")
+console.log("\n=== 4c. client holds no decision or action table of its own ===")
 
-await t("client reads stage order from the projection, not a hardcoded list", () => {
+await t("client renders decision points from the projection", () => {
   // A hardcoded copy in the client is a second source of truth: it drifts from
-  // config and the panel then groups rules under the wrong heading.
-  assert(!/const STAGE_ORDER\s*=/.test(clientSrc), "client must not hardcode a stage order")
-  assert(!/const STAGE_TEXT\s*=/.test(clientSrc), "client must not hardcode stage labels")
-  assert(/info\.stages/.test(clientSrc) || /rules, stages, t, locale/.test(clientSrc), "client must render stages from the projection")
+  // config and the panel then shows something the plugin will never do.
+  assert(!/const STAGE_ORDER\s*=/.test(clientSrc), "client must not hardcode an order")
+  assert(!/const STAGE_TEXT\s*=/.test(clientSrc), "client must not hardcode labels")
+  assert(/info\?\.decisions/.test(clientSrc), "client must read decisions from the projection")
+  assert(/renderDecision\(/.test(clientSrc), "client must render a decision point")
 })
 
 await t("client action labels come from the dictionary, not a local table", () => {
   assert(!/const ACTION_TEXT\s*=/.test(clientSrc), "client must not hardcode action text")
-  assert(/t\(`action\.\$\{r\.action\}`\)/.test(clientSrc), "action label must be translated by key")
+  assert(/t\(`action\.\$\{action\}`\)/.test(clientSrc), "action label must be translated by key")
 })
 
-await t("client registers a dictionary for every language the host ships", async () => {
+await t("client registers a dictionary for every language the host ships", () => {
   const m = /const DICT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
   assert(m, "DICT not found")
   const langs = [...m[1].matchAll(/(\bzh|\ben):\s*\{/g)].map((x) => x[1])
   assert(langs.includes("zh"), "dictionary must cover zh")
   assert(langs.includes("en"), "dictionary must cover en")
   assert(/localeSvc\?\.register\?\.\(NS, id, dict\)/.test(clientSrc), "dictionary must be registered with the locale service")
-})
-
-await t("renderStages groups undefined stages separately (never folds into a known one)", () => {
-  const m = /function renderStages\(rules, stages, t, locale\) \{[\s\S]*?\n    \}/.exec(clientSrc)
-  assert(m, "renderStages not found")
-  assert(/unknown\.length > 0/.test(m[0]), "renderStages must group unknown stages separately")
-  assert(/unknown/.test(m[0]) && /t\("stage\.unknown"\)/.test(m[0]), "unknown group must be labelled")
-})
-
-await t("client never hardcodes a stage id", async () => {
-  const { STAGES } = await import("../lib/config.js")
-  for (const st of STAGES) {
-    const re = new RegExp(`["'\`]${st}["'\`]`)
-    assert(!re.test(clientSrc), `client must not hardcode the stage id ${st}`)
-  }
 })
 
 console.log("\n=== 4d. The test harness itself ===")
@@ -159,14 +145,11 @@ await t("every test file's t() awaits fn()", async () => {
   assert(bad.length === 0, `these files do not await in t(), so async assertion failures vanish: ${bad.join(", ")}`)
 })
 
-await t("the action enum has one owner", () => {
-  const src = readFileSync(join(ROOT, "lib/config.js"), "utf8")
-  const m = /const ACTIONS = new Set\((\[[^\]]*\])\)/.exec(src)
-  assert(m, "ACTIONS not found")
-  const actions = JSON.parse(m[1])
+await t("the action enum has one owner", async () => {
+  const { DECISION_ACTIONS } = await import("../lib/decisions.js")
   const cm = /const DICT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
   assert(cm, "DICT not found")
-  for (const a of actions) {
+  for (const a of DECISION_ACTIONS) {
     assert(cm[1].includes(`"action.${a}"`), `dictionary is missing action.${a}`)
   }
 })
@@ -184,7 +167,7 @@ await t("waits for durability after sending", () => has(actionSrc, /await ctx\.s
 
 console.log("\n=== 6. Zero external dependencies ===")
 await t("does not import @deepseek-ai/*", () => {
-  for (const f of ["host.js", "client.js", "lib/action.js", "lib/arbiter.js", "lib/config.js", "lib/context.js", "lib/core.js", "lib/judge.js", "lib/log.js", "lib/message.js", "lib/phases.js"]) {
+  for (const f of ["host.js", "client.js", "lib/action.js", "lib/arbiter.js", "lib/config.js", "lib/context.js", "lib/core.js", "lib/judge.js", "lib/log.js", "lib/message.js", "lib/progress.js", "lib/decisions.js", "lib/host-locale.js"]) {
     const src = readFileSync(join(ROOT, f), "utf8")
     const bad = /^\s*import\s+[^;]*from\s+["']@deepseek-ai\//m.exec(src)
     assert(!bad, `${f} still imports an external package: ${bad?.[0]?.trim()}`)
