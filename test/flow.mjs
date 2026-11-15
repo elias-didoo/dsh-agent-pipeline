@@ -21,8 +21,8 @@ const t = async (name, fn) => {
 const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
 // Route this run's logs to a temp dir so no invocation ever pollutes real logs.
-process.env.DECISION_ORCHESTRATOR_LOG_DIR ??=
-  new URL(`file://${(await import("node:os")).tmpdir()}/decision-orchestrator-test-logs`).pathname
+process.env.AGENT_PIPELINE_LOG_DIR ??=
+  new URL(`file://${(await import("node:os")).tmpdir()}/agent-pipeline-test-logs`).pathname
 
 const { handleTurnEnd, waitSatisfied } = await import("../lib/core.js")
 
@@ -567,7 +567,7 @@ await t("model unreachable and over the limit → stops with stoppedReason + log
   const { join: pjoin } = await import("node:path")
   const d0 = new Date()
   const ymd = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(d0.getDate()).padStart(2, "0")}`
-  const logPath = pjoin(process.env.DECISION_ORCHESTRATOR_LOG_DIR, `${ymd}.jsonl`)
+  const logPath = pjoin(process.env.AGENT_PIPELINE_LOG_DIR, `${ymd}.jsonl`)
   const before = existsSync(logPath) ? readFileSync(logPath, "utf8").trim().split("\n").length : 0
 
   // Only a branch calls the model now, so the flow is parked on one. A send

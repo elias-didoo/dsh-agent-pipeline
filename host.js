@@ -1,5 +1,5 @@
 /**
- * decision-orchestrator host entry point.
+ * dsh-agent-pipeline host entry point.
  *
  * Responsibilities:
  *   1. Register the sessionProjections unit (per-session state, rebuildable
@@ -16,12 +16,12 @@ import { effectiveConfig } from "./lib/config.js"
 import { SerialQueue } from "./lib/judge.js"
 import { log } from "./lib/log.js"
 
-export const name = "decision-orchestrator"
+export const name = "dsh-agent-pipeline"
 export const inject = ["agents", "sessions", "goals", "schedule", "sessionProjections", "tokenMeter"]
 export { Config }
 
 /** Projection unit definition. */
-const PROJECTION_KEY = "decision-orchestrator"
+const PROJECTION_KEY = "agent-pipeline"
 
 /**
  * Initial state: locate the workspace via `header.cwd`.

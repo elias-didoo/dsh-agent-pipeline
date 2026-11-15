@@ -1,5 +1,5 @@
 {
-  "name": "dsh-decision-orchestrator",
+  "name": "dsh-agent-pipeline",
   "version": "0.1.0",
   "description": "Run a workspace's fixed review pipeline in DeepSeek Harness: each step fires when the agent finishes the last one, and the pipeline pauses where you have to decide.",
   "type": "module",

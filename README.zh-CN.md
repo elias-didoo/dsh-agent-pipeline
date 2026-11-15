@@ -1,4 +1,4 @@
-# dsh-decision-orchestrator
+# dsh-agent-pipeline
 
 **中文** | [English](README.md)
 
@@ -17,9 +17,9 @@
 ## 安装
 
 ```bash
-git clone https://github.com/elias-didoo/dsh-decision-orchestrator.git \
-  ~/.dsh/plugins/decision-orchestrator
-cd ~/.dsh/plugins/decision-orchestrator
+git clone https://github.com/elias-didoo/dsh-agent-pipeline.git \
+  ~/.dsh/plugins/agent-pipeline
+cd ~/.dsh/plugins/agent-pipeline
 npm test          # 可选，验证环境
 ```
 
@@ -28,7 +28,7 @@ npm test          # 可选，验证环境
 ```json
 {
   "dependencies": {
-    "dsh-decision-orchestrator": "file:../../plugins/decision-orchestrator"
+    "dsh-agent-pipeline": "file:../../plugins/agent-pipeline"
   }
 }
 ```
@@ -37,8 +37,8 @@ npm test          # 可选，验证环境
 
 ```yaml
 - insert:
-    - id: decision-orchestrator
-      name: "dsh-decision-orchestrator"
+    - id: agent-pipeline
+      name: "dsh-agent-pipeline"
       config:
         # ...
 ```
@@ -263,7 +263,7 @@ agent 因网络中断或 provider 超时停止时，连续重发到 `failureRetr
 插件不发通知。要知道它何时停下、为什么停下，看日志：
 
 ```bash
-tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
+tail -f ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 ```
 
 | `ev` | 含义 |
@@ -307,7 +307,7 @@ node test/all.mjs --fast   # 跳过真实 Kev
 ## 排查
 
 ```bash
-tail -20 ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
+tail -20 ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 ```
 
 关键 `ev`：`judge`（阶段与置信度）、`pick`（选中哪条规则）、`send`、`skip`（被拦下，`why` 说明原因）、`halt`（命中 stop 规则后暂停）、`stop`（因错误或上限停止）。

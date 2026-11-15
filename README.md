@@ -1,4 +1,4 @@
-# dsh-decision-orchestrator
+# dsh-agent-pipeline
 
 [中文](README.zh-CN.md) | **English**
 
@@ -17,9 +17,9 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that runs a workspac
 ## Install
 
 ```bash
-git clone https://github.com/elias-didoo/dsh-decision-orchestrator.git \
-  ~/.dsh/plugins/decision-orchestrator
-cd ~/.dsh/plugins/decision-orchestrator
+git clone https://github.com/elias-didoo/dsh-agent-pipeline.git \
+  ~/.dsh/plugins/agent-pipeline
+cd ~/.dsh/plugins/agent-pipeline
 npm test          # optional, verifies your environment
 ```
 
@@ -28,7 +28,7 @@ Add the dependency to `~/.dsh/profiles/desktop/package.json`:
 ```json
 {
   "dependencies": {
-    "dsh-decision-orchestrator": "file:../../plugins/decision-orchestrator"
+    "dsh-agent-pipeline": "file:../../plugins/agent-pipeline"
   }
 }
 ```
@@ -37,8 +37,8 @@ Mount it in `~/.dsh/profiles/desktop/cordis.patch.yml` (full config example unde
 
 ```yaml
 - insert:
-    - id: decision-orchestrator
-      name: "dsh-decision-orchestrator"
+    - id: agent-pipeline
+      name: "dsh-agent-pipeline"
       config:
         # ...
 ```
@@ -306,7 +306,7 @@ The plugin sends no notifications. To find out when and why it stopped, read
 the log:
 
 ```bash
-tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
+tail -f ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 ```
 
 | `ev` | Meaning |
@@ -350,7 +350,7 @@ node test/all.mjs --fast   # skip the live-model suite
 ## Troubleshooting
 
 ```bash
-tail -20 ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
+tail -20 ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 ```
 
 Key `ev` values: `send` (a step fired), `advance` (a silent step passed), `branch` (the model chose a direction), `halt` (the flow paused — `step` and `why` say where), `skip` (held back — `why` says why), `stop` (terminated by an error or limit).

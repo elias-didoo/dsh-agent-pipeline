@@ -1,5 +1,5 @@
 /**
- * decision-orchestrator client: the standing flow panel.
+ * dsh-agent-pipeline client: the standing flow panel.
  *
  * One panel, docked above the composer beside the todo list and the goal: the
  * running flow's steps, marked done / in progress / pending, with pause, resume
@@ -17,16 +17,16 @@
  */
 
 window.__ModuleLoader__.load({
-  id: "dsh-decision-orchestrator",
+  id: "dsh-agent-pipeline",
 
   factory(require) {
     const react = require("react")
 
     const h = react.createElement
 
-    const PROJECTION_KEY = "decision-orchestrator"
+    const PROJECTION_KEY = "agent-pipeline"
 
-    const NS = "decision-orchestrator"
+    const NS = "agent-pipeline"
 
     const DICT = {
       zh: {

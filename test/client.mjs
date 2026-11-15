@@ -91,7 +91,7 @@ function projectionView(overrides = {}) {
 function mount({ locale = "zh", view = projectionView(), workspaceId = "w1" } = {}) {
   const { mod, def } = load(locale)
   const registered = { menus: [], slot: null, dicts: [] }
-  const session = { id: "s1", workspaceId, projectionValues: { "decision-orchestrator": view } }
+  const session = { id: "s1", workspaceId, projectionValues: { "agent-pipeline": view } }
   const ctx = {
     effect: (fn) => { fn() },
     contextMenus: { register: (m) => { registered.menus.push(m); return () => {} } },
@@ -155,7 +155,7 @@ console.log("=== 1. The module loads and registers what the host expects ===")
 
 await t("the module-loader entry point declares the package id", () => {
   const { def } = load()
-  assert(def.id === "dsh-decision-orchestrator", `id was ${def.id}`)
+  assert(def.id === "dsh-agent-pipeline", `id was ${def.id}`)
 })
 
 await t("the factory yields apply", () => {

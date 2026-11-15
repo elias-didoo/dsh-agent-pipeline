@@ -43,7 +43,7 @@ for (const [file, label, enabled = true] of suites) {
   console.log(`\n▶  ${label}`)
   const r = spawnSync(process.execPath, [join(HERE, file)], {
     stdio: "inherit",
-    env: { ...process.env, DECISION_ORCHESTRATOR_LOG_DIR: join(tmpdir(), "decision-orchestrator-test-logs") },
+    env: { ...process.env, AGENT_PIPELINE_LOG_DIR: join(tmpdir(), "agent-pipeline-test-logs") },
   })
   if (r.status !== 0) failed++
 }

@@ -17,8 +17,8 @@
  */
 
 // Route this run's logs to a temp dir so no invocation ever pollutes real logs.
-process.env.DECISION_ORCHESTRATOR_LOG_DIR ??=
-  new URL(`file://${(await import("node:os")).tmpdir()}/decision-orchestrator-test-logs`).pathname
+process.env.AGENT_PIPELINE_LOG_DIR ??=
+  new URL(`file://${(await import("node:os")).tmpdir()}/agent-pipeline-test-logs`).pathname
 
 const { readFileSync } = await import("node:fs")
 const { join } = await import("node:path")
@@ -216,7 +216,7 @@ function checkProfileMatches() {
   } catch {
     return "no profile; skipped"
   }
-  const at = profileText.indexOf("- id: decision-orchestrator")
+  const at = profileText.indexOf("- id: agent-pipeline")
   if (at < 0) return "plugin not in profile; skipped"
   const chunk = profileText.slice(at)
   const wsAt = chunk.indexOf("workspaces:")
