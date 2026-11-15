@@ -356,24 +356,6 @@ export function apply(ctx, config) {
       const ws = workspacesOf(config).find((w) => w.path === path)
       return ws ? describeWorkspace(ws) : { path, enabled: false, flows: [], steps: {} }
     },
-    /**
-     * Start a flow directly, bypassing the agent.
-     *
-     * The panel offers this so a user can start a pipeline without going
-     * through the model; the agent's route is the `start_flow` tool.
-     */
-    startFlow(session, flowName, note) {
-      const cfg = effectiveConfig(config, session?.header?.cwd)
-      if (!cfg) return false
-      const rt = { ...currentState(session) }
-      const started = beginFlow({ flowName, cfg, rt, mutate: (next) => mutate(session, next), note })
-      if (started) log({ ev: "flow-start", sessionId: session?.id, flow: flowName, via: "panel" })
-      return Boolean(started)
-    },
-    /** Pause, resume or cancel the running flow. */
-    controlFlow(session, action) {
-      return flowControl(session, action)
-    },
     /** Config validation result. */
     validate() {
       try {

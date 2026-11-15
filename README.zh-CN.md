@@ -154,8 +154,6 @@ agent 通过调用 `start_flow` 工具启动——和 `create_goal`、`todo_writ
 agent → start_flow({ flow: "requirement" })
 ```
 
-面板上也有启动入口，你不想经过 agent 时可以直接点。
-
 暂停、继续、取消是面板上的操作，不是工具。一个能给自己的流程踩刹车的 agent，也可能悄悄跳过自检。
 
 ## 语言

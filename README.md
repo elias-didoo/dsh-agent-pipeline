@@ -174,9 +174,6 @@ you: 评估如下需求，仅评估，不要动仓库：xxx
 agent → start_flow({ flow: "requirement" })
 ```
 
-The panel also has a start control, for when you would rather not go through the
-agent.
-
 Pause, resume and cancel are panel controls, not tools. An agent that could park
 its own pipeline could also quietly skip its self-check.
 
