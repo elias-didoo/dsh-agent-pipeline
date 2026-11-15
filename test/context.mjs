@@ -165,5 +165,49 @@ await t("empty message list yields an empty state", () => {
   assert(stats.eligible === 0, "eligible should be 0")
 })
 
+console.log("\n=== 5. The budget estimate is not lower than the model charges ===")
+
+await t("buildState prices a wall of Chinese at about one token per character", () => {
+  // The failure this guards: pricing text at four characters per token made a
+  // 4.8k estimate into an 11.2k request, and the model rejected it. 4825
+  // Chinese characters cost 5289 tokens measured against the running model.
+  //
+  // The assertion is on buildState's own accounting, not on estimateTokens in
+  // isolation: the bug lived in what buildState chose to price with.
+  const text = "中".repeat(4825)
+  const { stats } = buildState(
+    [{ role: "assistant", source: { kind: "model" }, content: [{ type: "text", text }], time: Date.now() }],
+    CFG,
+    40000,
+  )
+  assert(stats.used >= 4825, `must not price below one token per character, got ${stats.used}`)
+})
+
+await t("the state the plugin believes it built fits the window it budgets for", () => {
+  // Whatever the estimator does, the sum it reports must respect the budget —
+  // that is the contract buildState offers its caller.
+  const filler = "这是一段用于模拟真实 agent 回复的长中文内容，包含结论和说明。".repeat(60)
+  const now = Date.now()
+  const msgs = []
+  for (let i = 0; i < 6; i++) {
+    msgs.push({ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "继续" }], time: now - 600000 + i * 1000 })
+    msgs.push({ role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: filler }], time: now - 599000 + i * 1000 })
+  }
+  const { state, stats } = buildState(msgs, CFG, 8192)
+  assert(stats.used <= stats.budget, `used ${stats.used} must not exceed budget ${stats.budget}`)
+  assert(state.length > 0, "the state should still carry content")
+})
+
+await t("an oversized single reply is truncated to the budget", () => {
+  const filler = "中".repeat(30000)
+  const { stats } = buildState(
+    [{ role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: filler }], time: Date.now() }],
+    CFG,
+    8192,
+  )
+  assert(stats.lastTruncated === true, "an oversized reply must be truncated")
+  assert(stats.used <= stats.budget, `used ${stats.used} must not exceed budget ${stats.budget}`)
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
