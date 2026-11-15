@@ -325,8 +325,11 @@ export function apply(ctx, config) {
           }
           const session = agent?.session
           const ok = flowControl(session, action)
+          // Past tenses are spelled out rather than built from the action:
+          // "cancel" + "d" is "canceld".
+          const said = { pause: "paused", resume: "resumed", cancel: "cancelled" }[action]
           return ok
-            ? { kind: "success", text: `Flow ${action}d.` }
+            ? { kind: "success", text: `Flow ${said}.` }
             : { kind: "error", text: "No running flow to control." }
         },
       })

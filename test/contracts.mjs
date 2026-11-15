@@ -153,11 +153,18 @@ await t("every test file's t() awaits fn()", async () => {
   const bad = []
   for (const f of files) {
     const src = readFileSync(join(dir, f), "utf8")
-    const m = /const t = (?:async )?\([^)]*\) => \{([\s\S]*?)\n\}/.exec(src)
+    // Match the runner however it is spaced: `const t=(n,f)=>{` and
+    // `const t = async (n, f) => {` are the same declaration, and the compact
+    // form is what slipped past the first version of this check. The body is
+    // taken to the end of the line for a one-liner and to the next `)\n}` for a
+    // block.
+    const m = /const t\s*=\s*(async\s+)?\([^)]*\)\s*=>\s*\{([\s\S]*?)(?:\n\}|$)/.exec(src)
     if (!m) continue
-    if (!/await [^;]*\(/.test(m[1])) bad.push(f)
+    const isAsync = Boolean(m[1])
+    const awaits = /await\s/.test(m[2])
+    if (!isAsync && !awaits) bad.push(f)
   }
-  assert(bad.length === 0, `these files do not await in t(), so async assertion failures vanish: ${bad.join(", ")}`)
+  assert(bad.length === 0, `these files run t() synchronously, so async assertion failures vanish: ${bad.join(", ")}`)
 })
 
 await t("the step kinds have one owner", async () => {
