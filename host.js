@@ -1,10 +1,11 @@
 /**
- * decision-orchestrator 宿主入口。
+ * decision-orchestrator host entry point.
  *
- * 职责：
- *   1. 注册 sessionProjections 单元（每会话状态可从日志重建）
- *   2. 订阅 session/event，在 turn/end 时驱动主循环
- *   3. 暴露只读查询给 GUI
+ * Responsibilities:
+ *   1. Register the sessionProjections unit (per-session state, rebuildable
+ *      from the log)
+ *   2. Subscribe to session/event and drive the main loop on turn/end
+ *   3. Expose read-only queries to the GUI
  */
 
 import { Config, validateConfig } from "./lib/config.js"
@@ -16,12 +17,13 @@ export const name = "decision-orchestrator"
 export const inject = ["agents", "sessions", "goals", "schedule", "sessionProjections", "tokenMeter"]
 export { Config }
 
-/** projection 单元定义。 */
+/** Projection unit definition. */
 const PROJECTION_KEY = "decision-orchestrator"
 
 /**
- * 初始状态：由 header.cwd 定位工作区，把规则快照带进 projection。
- * apply 保持纯函数；配置通过 init 的闭包进入 state。
+ * Initial state: locate the workspace via `header.cwd` and carry a snapshot of
+ * its rules into the projection. `apply` stays pure; config reaches the state
+ * through the closure created in `init`.
  */
 function initialState(header, config) {
   let rulesEnabled = false
@@ -41,36 +43,41 @@ function initialState(header, config) {
       }))
     }
   } catch { /* ignore */ }
-  // projection 只放派生事实：运行期计数由主循环持有，不进这里
+  // The projection holds derived facts only; runtime counters belong to the
+  // main loop and never go here.
   return { rulesEnabled, rulesView }
 }
 
 /**
- * 纯同步的 projection apply：只做计数，不做任何 IO。
- * 忽略的事件必须返回同一引用。
+ * Purely synchronous projection `apply`: counting only, no IO whatsoever.
+ * An ignored event must return the same reference.
  */
 function applyEvent(state) {
-  // 刻意恒等：不在此计数。
+  // Deliberately identity: no counting happens here.
   //
-  // iterations / failures 属于「运行期决定」，由主循环经 mutate 持有；
-  // 若在这里也累加，同一个 turn/end 会被数两次（曾导致 limit=3 时只重试 1 次）。
+  // iterations / failures are runtime decisions held by the main loop through
+  // `mutate`. Counting them here too would double-count one turn/end — this
+  // once made `limit = 3` retry only once.
   //
-  // projection 只承载从日志能重建的派生事实 —— 当前是 init 里带出的工作区规则快照。
-  // 恒等返回同一引用，也让 projection 缓存不因本单元产生任何写入。
+  // The projection carries only facts rebuildable from the log — currently the
+  // workspace rule snapshot taken in `init`. Returning the same reference also
+  // keeps this unit from ever writing to the projection cache.
   return state
 }
 
 /**
- * 投影状态 schema。
+ * Projection state schema.
  *
- * 契约（dsh-session-projection）：
- *   - 热读：try { state = def.stateSchema.parse(row.val) } catch { continue }
- *          values[key] = def.wire.viewSchema.parse(def.wire.view(state))   ← 不在 try 内
- *   - 冷读：def.stateSchema.parse(row.val)                                ← 不在 try 内
- * 因此两者都必须存在且可 parse，否则直接抛错导致会话加载失败。
+ * Contract (dsh-session-projection):
+ *   - warm read: try { state = def.stateSchema.parse(row.val) } catch { continue }
+ *                values[key] = def.wire.viewSchema.parse(def.wire.view(state))  ← outside the try
+ *   - cold read: def.stateSchema.parse(row.val)                               ← outside the try
+ * So both schemas must exist and be parseable; otherwise the throw takes down
+ * session loading.
  *
- * 这里给出真正的结构校验：缺失或类型不符的字段回落到安全默认值，
- * 宁可丢一次计数，也不让整个会话读不出来。
+ * This performs real structural validation: missing or mistyped fields fall back
+ * to safe defaults. Better to lose one count than to make a whole session
+ * unreadable.
  */
 const stateSchema = {
   parse(value) {
@@ -82,7 +89,7 @@ const stateSchema = {
   },
 }
 
-/** 视图 schema：wire.view 的输出必须能过这一层。 */
+/** View schema: whatever `wire.view` returns must survive this layer. */
 const viewSchema = {
   parse(value) {
     const v = value && typeof value === "object" ? value : {}
@@ -94,34 +101,37 @@ const viewSchema = {
 }
 
 /**
- * 暴露给 Client 的视图。
+ * The view exposed to the client.
  *
  * practices.md: "When the Client needs a value derived from a session,
  * declare wire.view on the Host projection."
  *
- * summary: true 让 view 的结果进入 client 的 session.projectionValues。
- * state.rulesView 由主循环在每次 turn/end 后写入该会话所属工作区的规则快照。
+ * `summary: true` puts the view's result into the client's
+ * `session.projectionValues`. `state.rulesView` is written by the main loop
+ * after each turn/end with the rule snapshot of the session's workspace.
  */
 function viewOf(state) {
-  // 只暴露「从日志可重建」的事实：某工作区是否启用、规则是什么。
-  // iterations / stopped 属于运行期状态，不在日志里，放进视图只会显示过期的 0。
+  // Expose only facts rebuildable from the log: whether a workspace is enabled
+  // and what its rules are. iterations / stopped are runtime state that never
+  // reaches the log, so exposing them would show a stale 0.
   return {
     enabled: state?.rulesEnabled === true,
     rules: Array.isArray(state?.rulesView) ? state.rulesView : [],
   }
 }
 
-/** 从 agent 反查 session。 */
+/** Resolve an agent back to its session. */
 function sessionOf(agent) {
   return agent?.session ?? undefined
 }
 
-/** 对每个 live agent 找它对应的 session。 */
+/** Find the session behind each live agent. */
 function agentForSession(ctx, session) {
   try {
     const list = ctx.agents.list()
-    // 优先按引用匹配（同一实例）；session 被重建时引用会变，
-    // 因此再用 session id 兜一层，否则插件会静默失效。
+    // Match by reference first (same instance). References change when a
+    // session is rebuilt, so session id is the fallback — without it the plugin
+    // would silently stop working.
     for (const a of list) {
       if (a?.session === session) return a
     }
@@ -139,10 +149,10 @@ export function apply(ctx, config) {
   const queue = new SerialQueue()
   const inflight = new Set()
 
-  // apply 入口标记：用于区分「插件被加载过」与「旧进程残留」
+  // Apply-entry marker: distinguishes "plugin loaded" from "stale process".
   log({ ev: "apply", pid: process.pid })
 
-  // 配置校验（不阻塞启动，只记录）
+  // Config validation (never blocks startup, logs only)
   try {
     const errors = validateConfig(config)
     if (errors.length) log({ ev: "config-invalid", errors })
@@ -150,9 +160,10 @@ export function apply(ctx, config) {
     log({ ev: "config-validate-fail", err: String(e?.message ?? e) })
   }
 
-  // ── 注册 projection ──
-  // register 返回 thenable：同步失败走 catch，异步失败要走 then 的 reject。
-  // 注册失败只应让插件失效，绝不能影响 DSH 启动或会话读取。
+  // ── Register the projection ──
+  // `register` returns a thenable: synchronous failures hit `catch`, async ones
+  // reject through `then`. A registration failure must disable only this plugin —
+  // it must never affect DSH startup or session reads.
   let projectionHandle
   try {
     projectionHandle = ctx.sessionProjections.register({
@@ -168,7 +179,8 @@ export function apply(ctx, config) {
       },
     })
     log({ ev: "projection-registered", key: PROJECTION_KEY })
-    // 异步装配失败：记日志并把句柄作废，后续 stateOf 回落到默认状态
+    // Async wiring failed: log it and drop the handle so later stateOf calls
+    // fall back to the default state.
     Promise.resolve(projectionHandle).then(
       () => log({ ev: "projection-ready", key: PROJECTION_KEY }),
       (e) => {
@@ -181,7 +193,7 @@ export function apply(ctx, config) {
     projectionHandle = undefined
   }
 
-  /** 读取某 session 的 projection 状态。 */
+  /** Read the projection state of one session. */
   function stateOf(session) {
     const fallback = () => initialState(session?.header, config)
     try {
@@ -192,9 +204,10 @@ export function apply(ctx, config) {
   }
 
   /**
-   * 写回 projection 状态。
-   * projection 是纯派生结构，实际计数写在主循环的独立存储里；
-   * 这里用 WeakMap 暂存写回值，重启后从日志重建到字符串序列化值时自然归零。
+   * Write the projection state back.
+   * The projection is a purely derived structure, so actual counters live in the
+   * main loop's own store. This WeakMap only caches the written value; after a
+   * restart it is rebuilt from the log and naturally resets to defaults.
    */
   const runtimeOverrides = new WeakMap()
   function mutate(session, next) {
@@ -204,7 +217,7 @@ export function apply(ctx, config) {
     return runtimeOverrides.get(session) ?? stateOf(session)
   }
 
-  // ── 订阅 session/event ──
+  // ── Subscribe to session/event ──
   async function onSessionEvent(session, event) {
     if (!event || event.type !== "turn/end") return
 
@@ -240,16 +253,16 @@ export function apply(ctx, config) {
     log({ ev: "subscribe-fail", err: String(e?.message ?? e) })
   }
 
-  // ── 清理 ──
+  // ── Teardown ──
   try {
     ctx.effect?.(() => () => {
       try { projectionHandle?.dispose?.() } catch { /* ignore */ }
     })
   } catch { /* ignore */ }
 
-  // ── 只读查询（供 client 使用）──
+  // ── Read-only queries (used by the client) ──
   return {
-    /** 列出所有工作区配置。 */
+    /** List every workspace config. */
     listWorkspaces() {
       return (config?.workspaces ?? []).map((ws) => ({
         path: ws.path,
@@ -257,13 +270,13 @@ export function apply(ctx, config) {
         rules: ws.rules ?? [],
       }))
     },
-    /** 取某个工作区的配置。 */
+    /** Get the config of one workspace. */
     getWorkspace(path) {
       const ws = (config?.workspaces ?? []).find((w) => w.path === path)
       if (!ws) return { path, enabled: false, rules: [] }
       return { path: ws.path, enabled: ws.enabled === true, rules: ws.rules ?? [] }
     },
-    /** 配置校验结果。 */
+    /** Config validation result. */
     validate() {
       try {
         return validateConfig(config)

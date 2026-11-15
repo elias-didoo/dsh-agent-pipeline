@@ -1,12 +1,13 @@
 /**
- * 端到端集成：真实 Kev 判定 + 完整主循环。
- * 这是最接近真机的验证，只把 DSH 的 agent/session 换成假对象。
+ * End-to-end: a real model judgement driving the full main loop.
+ * The closest thing to a live run, with only DSH's agent/session faked.
  *
- * 断言的是「阶段 → 选中哪条规则」，而不是「有动作就算过」：
- * 后者在规则配错时会静默通过（选中不了规则就退回 UNCERTAIN 通知）。
+ * The assertion is "stage → which rule fired", not "something happened".
+ * The latter passes vacuously when rules are misconfigured, because failing to
+ * select a rule just falls back to the UNCERTAIN path.
  */
 
-// 测试自己的日志写到临时目录，任何方式运行都不污染真机日志
+// Route this run's logs to a temp dir so no invocation ever pollutes real logs.
 process.env.DECISION_ORCHESTRATOR_LOG_DIR ??=
   new URL(`file://${(await import("node:os")).tmpdir()}/decision-orchestrator-test-logs`).pathname
 
@@ -64,7 +65,7 @@ const ctx = {
 }
 const queue = { run: (fn) => fn() }
 
-/** 造一条插件发过的消息，用来推进阶段内进度。 */
+/** Build a message this plugin sent, to advance intra-stage progress. */
 function pluginMsg(ruleId) {
   return {
     role: "user",
@@ -93,7 +94,8 @@ const cases = [
   },
   {
     label: "自检二轮",
-    // 真实 agent 的自检回复有几百字细节，只有一句话的输入模型判不出阶段
+    // Real self-check replies run to hundreds of characters of detail; a
+    // one-liner gives the model nothing to judge on.
     text: "这一轮又发现了 4 处问题。\n\n## 最重要的发现：字幕模板在繁中下会全部不可选\n\n`lib/contracts/caption-template.ts` 的 `SCRIPT_OF_LANGUAGE` 表里没有 `zh-Hant` 分支，导致取不到脚本类型，模板筛选直接返回空。已补上映射并加了一个断言。\n\n## 其余三处\n\n1. `scripts/check-i18n.mjs` 从 routing.ts 正则取 locale 列表，加繁中后正则没覆盖，漏扫。\n2. `lib/seo-utils.ts` 的 OG_LOCALES 缺 zh_TW。\n3. 两处测试快照过期。\n\n这些都已修完并提交，等下一轮检查再看还有没有漏的。",
     imported: [pluginMsg("review"), pluginMsg("summarize"), pluginMsg("selfcheck_1")],
     expectStage: "selfchecking",
@@ -118,7 +120,7 @@ const cases = [
   },
 ]
 
-console.log("=== 真实 Kev 端到端 ===\n")
+console.log("=== Live model end-to-end ===\n")
 let pass = 0
 const misses = []
 
@@ -141,14 +143,14 @@ for (const c of cases) {
   else misses.push({ ...c, got: r.ruleId, action: r.action })
 
   console.log(
-    `  ${ok ? "✅" : "❌"} ${c.label.padEnd(10)} 期望=${c.expectRule.padEnd(12)} 实际=${String(r.ruleId ?? "-").padEnd(12)} action=${String(r.action).padEnd(8)} ${ms}ms`,
+    `  ${ok ? "✅" : "❌"} ${c.label.padEnd(12)} expect=${c.expectRule.padEnd(12)} got=${String(r.ruleId ?? "-").padEnd(12)} action=${String(r.action).padEnd(8)} ${ms}ms`,
   )
-  if (!ok) console.log(`       期望 action=${c.expectAction}，reason=${r.reason ?? r.skipped ?? "-"}`)
+  if (!ok) console.log(`       expected action=${c.expectAction}, reason=${r.reason ?? r.skipped ?? "-"}`)
 }
 
-console.log(`\n=== ${pass}/${cases.length} 通过 ===`)
+console.log(`\n=== ${pass}/${cases.length} passed ===`)
 if (misses.length) {
-  console.log("\n未通过明细：")
-  for (const m of misses) console.log(`  ${m.label}: 期望 ${m.expectRule}/${m.expectAction}，实际 ${m.got ?? "-"}/${m.action}`)
+  console.log("\nFailures:")
+  for (const m of misses) console.log(`  ${m.label}: expected ${m.expectRule}/${m.expectAction}, got ${m.got ?? "-"}/${m.action}`)
 }
 process.exit(pass === cases.length ? 0 : 1)

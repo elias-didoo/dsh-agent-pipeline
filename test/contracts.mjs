@@ -1,11 +1,11 @@
 /**
- * 回归测试：DSH 运行时契约。
+ * Regression tests: DSH runtime contracts.
  *
- * 背景：曾因 projection 缺 stateSchema/viewSchema 导致
+ * Background: a projection once shipped without stateSchema/viewSchema,
  *   "Cannot read properties of undefined (reading 'parse')"
- * 使所有会话无法加载。这里把教训固化成测试。
+ * which made every session fail to load. These tests pin the lesson down.
  *
- * 运行：node test/contracts.mjs
+ * Run: node test/contracts.mjs
  */
 
 import { readFileSync } from "node:fs"
@@ -18,8 +18,9 @@ const clientSrc = readFileSync(join(ROOT, "client.js"), "utf8")
 
 let pass = 0
 let fail = 0
-// 必须 await fn()：同步版抓不到 async 用例里的断言失败，
-// 会让失败的用例静默显示成通过。
+// Must await fn(): a synchronous try/catch cannot catch assertion failures
+// inside async bodies,
+// which would make failing cases report as passing.
 const t = async (name, fn) => {
   try {
     await fn()
@@ -33,113 +34,116 @@ const t = async (name, fn) => {
 const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 const has = (src, re, msg) => assert(re.test(src), msg)
 
-console.log("=== 1. projection 契约（dsh-session-projection）===")
-// 热读：values[key] = wire.viewSchema.parse(wire.view(state))  ← 不在 try 内
-// 冷读：stateSchema.parse(row.val)                              ← 不在 try 内
-await t("stateSchema 已声明", () => has(hostSrc, /^\s*stateSchema,\s*$/m, "register 里缺 stateSchema"))
-await t("wire.viewSchema 已声明", () => has(hostSrc, /^\s*viewSchema,\s*$/m, "wire 里缺 viewSchema"))
-await t("wire.view 已声明", () => has(hostSrc, /^\s*view:\s*viewOf,\s*$/m, "缺 wire.view"))
-await t("stateVersion 是安全整数", () => has(hostSrc, /stateVersion:\s*\d+/, "stateVersion 缺失或非常量"))
-await t("init 与 apply 存在", () => {
-  has(hostSrc, /^\s*init:\s*\(header\)/m, "缺 init")
-  has(hostSrc, /^\s*apply:\s*applyEvent,\s*$/m, "缺 apply")
+console.log("=== 1. projection contract (dsh-session-projection) ===")
+// warm read: values[key] = wire.viewSchema.parse(wire.view(state))  ← outside the try
+// cold read: stateSchema.parse(row.val)                              ← outside the try
+await t("stateSchema declared", () => has(hostSrc, /^\s*stateSchema,\s*$/m, "register is missing stateSchema"))
+await t("wire.viewSchema declared", () => has(hostSrc, /^\s*viewSchema,\s*$/m, "wire is missing viewSchema"))
+await t("wire.view declared", () => has(hostSrc, /^\s*view:\s*viewOf,\s*$/m, "missing wire.view"))
+await t("stateVersion is a safe integer", () => has(hostSrc, /stateVersion:\s*\d+/, "stateVersion missing or not a constant"))
+await t("init and apply present", () => {
+  has(hostSrc, /^\s*init:\s*\(header\)/m, "missing init")
+  has(hostSrc, /^\s*apply:\s*applyEvent,\s*$/m, "missing apply")
 })
 
-console.log("\n=== 2. contextMenus 契约 ===")
-await t("target/id/order/resolve 齐全", () => {
-  has(clientSrc, /target:\s*"workspace"/, "缺 target")
-  has(clientSrc, /id:\s*"workspace\.decisionOrchestrator"/, "缺 id")
-  has(clientSrc, /order:\s*\d+/, "缺 order")
-  has(clientSrc, /resolve:\s*\(\{[^}]*\}\)\s*=>/, "缺 resolve")
+console.log("\n=== 2. contextMenus contract ===")
+await t("target/id/order/resolve all present", () => {
+  has(clientSrc, /target:\s*"workspace"/, "missing target")
+  has(clientSrc, /id:\s*"workspace\.decisionOrchestrator"/, "missing id")
+  has(clientSrc, /order:\s*\d+/, "missing order")
+  has(clientSrc, /resolve:\s*\(\{[^}]*\}\)\s*=>/, "missing resolve")
 })
 
-console.log("\n=== 3. slots 契约 ===")
-await t("用 generator 形式的 slots.inject", () =>
-  has(clientSrc, /slots\.inject\("shell\.overlay",\s*function\s*\*/, "slots.inject 回调必须是 generator"))
-await t("register 的组件是第二参数", () =>
-  has(clientSrc, /slots\.register\([\s\S]*?\},\s*PanelHost\s*,?\s*\)/, "组件必须作为 register 的第二参数"))
-await t("register 定义含 name/id/inject", () => {
+console.log("\n=== 3. slots contract ===")
+await t("slots.inject uses the generator form", () =>
+  has(clientSrc, /slots\.inject\("shell\.overlay",\s*function\s*\*/, "slots.inject callback must be a generator"))
+await t("the component is register's second argument", () =>
+  has(clientSrc, /slots\.register\([\s\S]*?\},\s*PanelHost\s*,?\s*\)/, "component must be register's second argument"))
+await t("register definition has name/id/inject", () => {
   const m = /slots\.register\(([\s\S]*?)\},\s*PanelHost/.exec(clientSrc)
-  assert(m, "找不到 register 调用")
+  assert(m, "register call not found")
   for (const k of ["name", "id", "inject"]) {
-    assert(new RegExp(`\\b${k}\\s*:`).test(m[1]), `register 定义缺 ${k}`)
+    assert(new RegExp(`\\b${k}\\s*:`).test(m[1]), `register definition missing ${k}`)
   }
 })
 
-console.log("\n=== 4. Client ModuleLoader 契约 ===")
-await t("id 等于包名", async () => {
+console.log("\n=== 4. Client ModuleLoader contract ===")
+await t("id equals the package name", async () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
-  assert(clientSrc.includes(`id: "${pkg.name}"`), `ModuleLoader id 必须等于 package.json name（${pkg.name}）`)
+  assert(clientSrc.includes(`id: "${pkg.name}"`), `ModuleLoader id must equal package.json name (${pkg.name})`)
 })
-await t("factory 返回 { inject, apply }", () => {
+await t("factory yields { inject, apply }", () => {
   const m = /return\s*\{[\s\S]*?inject:\s*\[([^\]]*)\]/.exec(clientSrc)
-  assert(m, "找不到 factory 的 inject 声明")
-  assert(m[1].includes('"slots"'), "inject 缺 slots")
-  has(clientSrc, /apply\(ctx\)/, "缺 apply")
+  assert(m, "factory inject declaration not found")
+  assert(m[1].includes('"slots"'), "inject is missing slots")
+  has(clientSrc, /apply\(ctx\)/, "missing apply")
 })
 
-console.log("\n=== 4b. client inject 覆盖所有用到的服务 ===")
-await t("ctx.<service> 用到的服务都在 inject 里", () => {
-  // cordis 的 Proxy 对未注入的 ctx.xxx 直接抛错；若被 try/catch 吞掉，
-  // 就会静默降级（曾导致 GUI 永远显示「此工作区尚无会话」）。
+console.log("\n=== 4b. client inject covers every service used ===")
+await t("every ctx.<service> used is declared in inject", () => {
+  // Cordis' Proxy throws for any ctx.xxx not injected; if a try/catch swallows
+  // it, the plugin degrades silently (this once left the GUI permanently
+  // showing "no session in this workspace").
   const decl = /inject:\s*\[([^\]]+)\]/.exec(clientSrc)
-  assert(decl, "找不到 inject 声明")
+  assert(decl, "inject declaration not found")
   const declared = new Set(
     decl[1].split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean),
   )
-  // 去掉注释，避免把文档里的 ctx.xxx 当成真实调用
+  // Strip comments so a ctx.xxx mentioned in prose is not read as a real call.
   const code = clientSrc
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/.*$/gm, "$1")
   const used = new Set()
   for (const m of code.matchAll(/ctx\.([a-zA-Z]+)/g)) used.add(m[1])
-  // 这些不是 cordis 服务
+  // These are not Cordis services.
   for (const notService of ["effect", "on", "get", "logger"]) used.delete(notService)
   const missing = [...used].filter((k) => !declared.has(k))
-  assert(missing.length === 0, `inject 缺少: ${missing.join(", ")}`)
+  assert(missing.length === 0, `inject is missing: ${missing.join(", ")}`)
 })
 
-console.log("\n=== 4c. client 与 config 的阶段定义同步 ===")
+console.log("\n=== 4c. client and config stage definitions stay in sync ===")
 
-await t("client 的 STAGE_ORDER === config.STAGES", async () => {
-  // 两份定义各自独立；一旦不同步，client 会把规则显示在错的阶段下。
+await t("client STAGE_ORDER === config.STAGES", async () => {
+  // The two definitions are independent; when they drift the client renders
+  // rules under the wrong stage.
   const { STAGES } = await import("../lib/config.js")
   const m = /const STAGE_ORDER = (\[[^\]]*\])/.exec(clientSrc)
-  assert(m, "找不到 STAGE_ORDER")
+  assert(m, "STAGE_ORDER not found")
   const order = JSON.parse(m[1])
   assert(
     JSON.stringify(order) === JSON.stringify(STAGES),
-    `client ${JSON.stringify(order)} 与 config ${JSON.stringify(STAGES)} 不一致`,
+    `client ${JSON.stringify(order)} does not match config ${JSON.stringify(STAGES)}`,
   )
 })
 
-await t("client 的 STAGE_TEXT 覆盖全部阶段", async () => {
+await t("client STAGE_TEXT covers every stage", async () => {
   const { STAGES } = await import("../lib/config.js")
   const m = /const STAGE_TEXT = \{([\s\S]*?)\}/.exec(clientSrc)
-  assert(m, "找不到 STAGE_TEXT")
+  assert(m, "STAGE_TEXT not found")
   const keys = [...m[1].matchAll(/(\w+)\s*:/g)].map((x) => x[1])
   for (const st of STAGES) {
-    assert(keys.includes(st), `STAGE_TEXT 缺 ${st}`)
+    assert(keys.includes(st), `STAGE_TEXT is missing ${st}`)
   }
-  assert(keys.length === STAGES.length, `STAGE_TEXT 多出键: ${keys.filter((k) => !STAGES.includes(k))}`)
+  assert(keys.length === STAGES.length, `STAGE_TEXT has extra keys: ${keys.filter((k) => !STAGES.includes(k))}`)
 })
 
-await t("renderStages 把未知阶段单独分组（不静默归到 planning）", async () => {
+await t("renderStages groups unknown stages separately (never folds into planning)", async () => {
   const m = /function renderStages\(rules\) \{[\s\S]*?\n    \}/.exec(clientSrc)
-  assert(m, "找不到 renderStages")
-  // 源码层面确认不再有「未知即 planning」的兜底
+  assert(m, "renderStages not found")
+  // Confirm at source level that the "unknown means planning" fallback is gone.
   assert(
     !/STAGE_ORDER\.includes\(r\.when\)\s*\?\s*r\.when\s*:\s*"planning"/.test(m[0]),
-    "renderStages 仍把未知阶段静默归到 planning",
+    "renderStages still silently folds unknown stages into planning",
   )
-  assert(/unknown\.length > 0/.test(m[0]), "renderStages 未对未知阶段单独成组")
+  assert(/unknown\.length > 0/.test(m[0]), "renderStages does not group unknown stages separately")
 })
 
-console.log("\n=== 4d. 测试框架自身 ===")
+console.log("\n=== 4d. The test harness itself ===")
 
-await t("每个测试文件的 t() 都 await fn()", async () => {
-  // 同步版 t() 抓不到 async 用例的断言失败，会让失败静默显示成通过。
-  // 这个坑在 phase.mjs 和 contracts.mjs 上都踩过。
+await t("every test file's t() awaits fn()", async () => {
+  // A synchronous t() cannot catch assertion failures in async bodies and
+  // would report failures as passing.
+  // This bit both phase.mjs and contracts.mjs before.
   const { readdirSync } = await import("node:fs")
   const dir = new URL(".", import.meta.url).pathname
   const files = readdirSync(dir).filter((f) => f.endsWith(".mjs") && f !== "all.mjs")
@@ -150,41 +154,42 @@ await t("每个测试文件的 t() 都 await fn()", async () => {
     if (!m) continue
     if (!/await [^;]*\(/.test(m[1])) bad.push(f)
   }
-  assert(bad.length === 0, `这些文件的 t() 不 await，异步断言失败会被静默吞掉: ${bad.join(", ")}`)
+  assert(bad.length === 0, `these files do not await in t(), so async assertion failures vanish: ${bad.join(", ")}`)
 })
 
-await t("client 的 ACTION_TEXT 覆盖 config 的全部 action", async () => {
-  // 两份定义各自独立；不同步时面板会把 raw action 名直接显示给用户。
+await t("client ACTION_TEXT covers every config action", async () => {
+  // The two definitions are independent; out of sync, the panel shows the raw
+  // action name straight to the user.
   const src = readFileSync(join(ROOT, "lib/config.js"), "utf8")
   const m = /const ACTIONS = new Set\((\[[^\]]*\])\)/.exec(src)
-  assert(m, "找不到 ACTIONS")
+  assert(m, "ACTIONS not found")
   const actions = JSON.parse(m[1])
   const cm = /const ACTION_TEXT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
-  assert(cm, "找不到 ACTION_TEXT")
+  assert(cm, "ACTION_TEXT not found")
   const keys = [...cm[1].matchAll(/(\w+)\s*:/g)].map((x) => x[1])
-  for (const a of actions) assert(keys.includes(a), `ACTION_TEXT 缺 ${a}`)
-  assert(keys.length === actions.length, `ACTION_TEXT 多出键: ${keys.filter((k) => !actions.includes(k))}`)
+  for (const a of actions) assert(keys.includes(a), `ACTION_TEXT is missing ${a}`)
+  assert(keys.length === actions.length, `ACTION_TEXT has extra keys: ${keys.filter((k) => !actions.includes(k))}`)
 })
 
-console.log("\n=== 5. v4 消息来源契约 ===")
+console.log("\n=== 5. v4 message-source contract ===")
 const actionSrc = readFileSync(join(ROOT, "lib/action.js"), "utf8")
 const arbiterSrc = readFileSync(join(ROOT, "lib/arbiter.js"), "utf8")
-await t('source.kind 不是 "plugin"', () => {
+await t('source.kind is not "plugin"', () => {
   const combined = actionSrc + arbiterSrc
-  assert(!/kind:\s*["']plugin["']/.test(combined), '仍然使用被 v4 拒绝的 kind: "plugin"')
+  assert(!/kind:\s*["']plugin["']/.test(combined), 'still uses kind: "plugin", which v4 rejects')
 })
-await t('source.kind = "decision"', () => has(arbiterSrc, /PLUGIN_SOURCE_KIND\s*=\s*"decision"/, "kind 应为 decision"))
-await t("使用本地 createUserMessage", () => has(actionSrc, /from\s+"\.\/message\.js"/, "应使用本地 message.js"))
-await t("发送后等待持久化确认", () => has(actionSrc, /await ctx\.sessions\.flush\(/, "缺 sessions.flush"))
+await t('source.kind = "decision"', () => has(arbiterSrc, /PLUGIN_SOURCE_KIND\s*=\s*"decision"/, "kind should be decision"))
+await t("uses the local createUserMessage", () => has(actionSrc, /from\s+"\.\/message\.js"/, "should use the local message.js"))
+await t("waits for durability after sending", () => has(actionSrc, /await ctx\.sessions\.flush\(/, "missing sessions.flush"))
 
-console.log("\n=== 6. 零外部依赖 ===")
-await t("不 import @deepseek-ai/*", () => {
+console.log("\n=== 6. Zero external dependencies ===")
+await t("does not import @deepseek-ai/*", () => {
   for (const f of ["host.js", "client.js", "lib/action.js", "lib/arbiter.js", "lib/config.js", "lib/context.js", "lib/core.js", "lib/judge.js", "lib/log.js", "lib/message.js", "lib/phases.js"]) {
     const src = readFileSync(join(ROOT, f), "utf8")
     const bad = /^\s*import\s+[^;]*from\s+["']@deepseek-ai\//m.exec(src)
-    assert(!bad, `${f} 仍 import 外部包：${bad?.[0]?.trim()}`)
+    assert(!bad, `${f} still imports an external package: ${bad?.[0]?.trim()}`)
   }
 })
 
-console.log(`\n=== ${pass} 通过 / ${fail} 失败 ===`)
+console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

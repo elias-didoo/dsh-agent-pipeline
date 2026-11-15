@@ -1,13 +1,18 @@
 /**
- * decision-orchestrator 客户端：工作区右键菜单 + 规则只读面板。
+ * decision-orchestrator client: workspace context menu + read-only rules panel.
  *
- * 方向 2：GUI 只读展示，修改走 cordis.patch.yml 的 config。
- * 依据 practices.md：可调参数放进 Config，用户在 patch 层修改。
+ * GUI is read-only display; edits go through the config in cordis.patch.yml.
+ * Per practices.md: tunables belong in Config, and the user edits them at the
+ * patch layer.
  *
- * 注册形态对齐内置 client 插件（以 dsh-client-ui-workspace 为例）：
+ * Registration mirrors the built-in client plugins (dsh-client-ui-workspace):
  *   ctx.slots.inject(`shell.overlay`, function* () {
  *     yield ctx.slots.register({ name, id, locale, inject }, Component)
  *   })
+ *
+ * Source, comments and docs are English throughout this repo. UI strings below
+ * stay Chinese because they are what the user reads in the panel, and the stage
+ * criteria this plugin feeds the model are Chinese for the same reason.
  */
 
 window.__ModuleLoader__.load({
@@ -27,7 +32,7 @@ window.__ModuleLoader__.load({
       silent: "不做任何动作",
     }
 
-    /** 阶段中文名，用于分组标题。 */
+    /** Localized stage names used as group headings. */
     const STAGE_TEXT = {
       planning: "方案阶段",
       implementing: "改代码中",
@@ -39,17 +44,18 @@ window.__ModuleLoader__.load({
     const STAGE_ORDER = ["planning", "implementing", "selfchecking", "waiting", "finished", "conflict"]
 
     /**
-     * 读取本插件投影到该工作区的规则。
+     * Read the rules this plugin projected for that workspace.
      *
-     * Host 侧 projection 声明了 wire.view + summary:true，
-     * client 从 session summary 的 projectionValues 直接读已算好的值。
+     * The host projection declares wire.view + summary:true, so the client
+     * reads the precomputed value straight from the session summary's
+     * projectionValues.
      */
     function readProjection(ctx, workspaceId) {
       try {
         const sessions = ctx.sessions?.list?.getSnapshot?.()
         const byId = sessions?.byId ?? {}
 
-        // 优先：该工作区的会话
+        // Preferred: a session in that workspace
         let wsSessionIds = []
         try {
           const ws = ctx.workspaces?.list?.getSnapshot?.()
@@ -61,7 +67,7 @@ window.__ModuleLoader__.load({
           const v = byId[id]?.projectionValues?.[PROJECTION_KEY]
           if (v) return { sessionId: id, view: v }
         }
-        // 退化：任意带该投影的会话
+        // Fallback: any session carrying this projection
         for (const id of Object.keys(byId)) {
           const v = byId[id]?.projectionValues?.[PROJECTION_KEY]
           if (v) return { sessionId: id, view: v }
@@ -70,7 +76,7 @@ window.__ModuleLoader__.load({
       return undefined
     }
 
-    /** 样式（用 --dsw-alias-* 主题 token）。 */
+    /** Styles, built on --dsw-alias-* theme tokens. */
     const STYLE = `
 .do-overlay{position:fixed;inset:0;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center;z-index:10000}
 .do-panel{width:min(680px,92vw);max-height:82vh;overflow:auto;background:var(--dsw-alias-background-primary,#1e1e1e);color:var(--dsw-alias-text-primary,#ddd);border:1px solid var(--dsw-alias-border-primary,#444);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.45);padding:20px;font-size:13px;line-height:1.55;box-sizing:border-box}
@@ -101,10 +107,10 @@ window.__ModuleLoader__.load({
 `
 
     /**
-     * 按阶段分组渲染规则。
+     * Render rules grouped by stage.
      *
-     * 未知阶段单独成组显示，不静默归到某个已知阶段 ——
-     * 配置里写错 when 时应该看得出来，而不是被默默挪到别处。
+     * Unknown stages get their own group instead of being silently folded into
+     * a known one: a typo in `when` should be visible, not quietly relocated.
      */
     function renderStages(rules) {
       const list = Array.isArray(rules) ? rules : []
@@ -154,7 +160,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 规则只读面板。 */
+    /** Read-only rules panel. */
     function RulesPanel({ info, onClose }) {
       useEffect(() => {
         const onKey = (e) => { if (e.key === "Escape") onClose() }
@@ -219,7 +225,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 由 ctx 提供的关闭/打开状态（模块级，单例足够）。 */
+    /** Open/close state provided by ctx (module-level; one instance suffices). */
     let setInfo = null
 
     function PanelHost() {
@@ -230,7 +236,7 @@ window.__ModuleLoader__.load({
     }
 
     function applyClient(ctx) {
-      // 注入样式
+      // Inject styles
       try {
         if (typeof document !== "undefined" && !document.getElementById("do-style")) {
           const el = document.createElement("style")
@@ -240,13 +246,13 @@ window.__ModuleLoader__.load({
         }
       } catch { /* ignore */ }
 
-      // ── 工作区右键菜单 ──
+      // ── Workspace context menu ──
       ctx.effect(
         () =>
           ctx.contextMenus.register({
             id: "workspace.decisionOrchestrator",
             target: "workspace",
-            order: 250, // 介于 rename(100) 与 delete(300) 之间
+            order: 250, // between rename(100) and delete(300)
             resolve: ({ workspaceId, displayTitle }) => [
               {
                 id: "rules",
@@ -270,8 +276,8 @@ window.__ModuleLoader__.load({
         "decision-orchestrator: workspace menu",
       )
 
-      // ── 面板挂到 shell.overlay ──
-      // 形态对齐内置插件：inject(slot, function* () { yield register(def, Component) })
+      // ── Mount the panel into shell.overlay ──
+      // Mirrors built-in plugins: inject(slot, function* () { yield register(def, Component) })
       ctx.slots.inject("shell.overlay", function* () {
         yield ctx.slots.register(
           {
@@ -285,8 +291,9 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      // 用到的服务必须全部声明：cordis 的 Proxy 对未注入的 ctx.xxx 直接抛错，
-      // 被 try/catch 吞掉后会静默降级成「该工作区没有会话」。
+      // Every service used must be declared: Cordis' Proxy throws for any
+      // ctx.xxx that was not injected, and a swallowed error silently degrades
+      // into "this workspace has no session".
       inject: ["slots", "contextMenus", "sessions", "workspaces"],
       apply(ctx) {
         applyClient(ctx)

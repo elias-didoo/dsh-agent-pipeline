@@ -1,16 +1,18 @@
 /**
- * 阶段机测试：日志推导进度 + pickRule 查表。
+ * Stage machine: deriving progress from the log + the pickRule lookup.
  *
- * 这两个函数决定了「同一阶段下该发哪条」，
- * 而「第几轮自检」这类信息 Kev 判不出来，只能靠计数。
+ * These two functions decide which rule fires within a stage;
+ * questions like "which self-check round" cannot come from the model and
+ * must be counted.
  */
 
 const { phaseProgress, pickRule } = await import("../lib/phases.js")
 
 let pass = 0
 let fail = 0
-// 必须 await fn()：同步版 try/catch 抓不到 async 函数里的断言失败，
-// 会让失败的用例静默显示成通过。
+// Must await fn(): a synchronous try/catch cannot catch assertion failures
+// inside async bodies,
+// which would make failing cases report as passing.
 const t = async (name, fn) => {
   try {
     await fn()
@@ -25,7 +27,7 @@ const assert = (cond, msg) => {
   if (!cond) throw new Error(msg)
 }
 
-/** 造一条插件发过的消息。 */
+/** Build a message this plugin sent. */
 function decisionMsg(ruleId, text = "x") {
   return { role: "user", source: { kind: "decision", ruleId }, content: [{ type: "text", text }] }
 }
@@ -44,14 +46,14 @@ const RULES = [
   { id: "done", when: "finished", action: "stop", prompt: "", notifyText: "完成" },
 ]
 
-console.log("=== 1. 进度推导 ===")
+console.log("=== 1. Progress derivation ===")
 
-await t("没有插件消息 → 全零", () => {
+await t("no plugin messages → all zero", () => {
   const p = phaseProgress([], RULES)
   assert(p.selfCheckRound === 0, `selfCheckRound=${p.selfCheckRound}`)
 })
 
-await t("数出评审/汇总/自检", () => {
+await t("counts review / summary / self-check", () => {
   const msgs = [
     decisionMsg("review"),
     decisionMsg("summarize"),
@@ -59,29 +61,29 @@ await t("数出评审/汇总/自检", () => {
     decisionMsg("selfcheck_2"),
   ]
   const p = phaseProgress(msgs, RULES)
-  assert(p.selfCheckRound === 2, `selfCheckRound 应为 2，实际 ${p.selfCheckRound}`)
+  assert(p.selfCheckRound === 2, `selfCheckRound should be 2, got ${p.selfCheckRound}`)
 })
 
-await t("忽略不是 decision 的消息", () => {
+await t("ignores messages that are not ours", () => {
   const msgs = [
     { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "hi" }] },
     { role: "assistant", content: [{ type: "text", text: "ok" }] },
   ]
   const p = phaseProgress(msgs, RULES)
-  assert(p.selfCheckRound === 0, "不应计数")
-  assert(Object.keys(p.byRuleId).length === 0, "byRuleId 应为空")
+  assert(p.selfCheckRound === 0, "must not count")
+  assert(Object.keys(p.byRuleId).length === 0, "byRuleId should be empty")
 })
 
-await t("忽略配置里已不存在的 ruleId（配置改过不污染）", () => {
+await t("ignores ruleIds no longer in config (edits do not pollute)", () => {
   const msgs = [decisionMsg("selfcheck_1"), decisionMsg("old_rule_gone")]
   const p = phaseProgress(msgs, RULES)
-  assert(p.selfCheckRound === 1, `应为 1，实际 ${p.selfCheckRound}`)
-  assert(!("old_rule_gone" in p.byRuleId), "不应统计未知规则")
+  assert(p.selfCheckRound === 1, `should be 1, got ${p.selfCheckRound}`)
+  assert(!("old_rule_gone" in p.byRuleId), "unknown rules must not be counted")
 })
 
-console.log("\n=== 1b. when 字段校验 ===")
+console.log("\n=== 1b. `when` validation ===")
 
-await t("when 缺失 → 报错", async () => {
+await t("missing when → reported", async () => {
   const { validate } = await import("../lib/config.js")
   const r = validate({
     workspaces: [{ path: "/tmp/a", enabled: true, rules: [
@@ -89,10 +91,10 @@ await t("when 缺失 → 报错", async () => {
       { id: "b", scene: "s", action: "silent", prompt: "" },
     ] }],
   })
-  assert(r.issues?.some((i) => /when/.test(i.message)), `应报 when 错误: ${JSON.stringify(r.issues)}`)
+  assert(r.issues?.some((i) => /when/.test(i.message)), `expected a when issue: ${JSON.stringify(r.issues)}`)
 })
 
-await t("when 非法值 → 报错", async () => {
+await t("invalid when → reported", async () => {
   const { validate } = await import("../lib/config.js")
   const r = validate({
     workspaces: [{ path: "/tmp/a", enabled: true, rules: [
@@ -100,11 +102,12 @@ await t("when 非法值 → 报错", async () => {
       { id: "b", when: "planning", scene: "s", action: "silent", prompt: "" },
     ] }],
   })
-  assert(r.issues?.some((i) => /when/.test(i.message)), `应报 when 错误: ${JSON.stringify(r.issues)}`)
+  assert(r.issues?.some((i) => /when/.test(i.message)), `expected a when issue: ${JSON.stringify(r.issues)}`)
 })
 
-await t("when 非法时该规则降级为 silent（不会被选中执行）", async () => {
-  // validate 返回 { value } 或 { issues }，互斥；用 null 兜底好让断言看清真实形状
+await t("an invalid when degrades the rule to silent (never selected)", async () => {
+  // validate returns either { value } or { issues }, never both; a null
+  // fallback keeps the assertion honest about the real shape.
   const { validate } = await import("../lib/config.js")
   const raw = {
     workspaces: [{ path: "/tmp/a", enabled: true, rules: [
@@ -114,9 +117,11 @@ await t("when 非法时该规则降级为 silent（不会被选中执行）", as
   }
   const r = validate(raw)
 
-  // 优先看归一化结果
-  // 有 issue 时 validate 只返回 { issues }，此时归一化结果不可见，
-  // 能确认的是「这条规则因为 when 非法被明确报错，不会静默通过」。
+  // Check the normalized result first.
+  // With issues, validate returns only { issues } and the normalized value is
+  // invisible;
+  // what can still be confirmed is that the bad `when` is reported rather than
+  // silently accepted.
   const reported = (r.issues ?? []).some(
     (i) => i.path?.includes("when") && /\ba\b|\\(a\\)/.test(i.message),
   )
@@ -124,11 +129,11 @@ await t("when 非法时该规则降级为 silent（不会被选中执行）", as
 
   assert(
     reported || normalized?.action === "silent",
-    `非法 when 既未报错也未降级: ${JSON.stringify(r).slice(0, 200)}`,
+    `invalid when was neither reported nor degraded: ${JSON.stringify(r).slice(0, 200)}`,
   )
 })
 
-await t("六个阶段名都能通过校验", async () => {
+await t("all six stage names pass validation", async () => {
   const { validate, STAGES } = await import("../lib/config.js")
   for (const st of STAGES) {
     const r = validate({
@@ -137,11 +142,11 @@ await t("六个阶段名都能通过校验", async () => {
         { id: "b", when: "planning", scene: "s", action: "silent", prompt: "" },
       ] }],
     })
-    assert(!r.issues, `${st} 不应报错: ${JSON.stringify(r.issues)}`)
+    assert(!r.issues, `${st} should not error: ${JSON.stringify(r.issues)}`)
   }
 })
 
-await t("action 枚举只有 send/stop/silent，没有 notify", async () => {
+await t("the action enum is send/stop/silent only — notify is gone", async () => {
   const { validate } = await import("../lib/config.js")
   const mk = (action) => ({
     workspaces: [{ path: "/tmp/a", enabled: true, rules: [
@@ -149,101 +154,101 @@ await t("action 枚举只有 send/stop/silent，没有 notify", async () => {
       { id: "b", when: "planning", scene: "s", action: "silent", prompt: "" },
     ] }],
   })
-  assert(!validate(mk("stop")).issues, "stop 应通过")
+  assert(!validate(mk("stop")).issues, "stop should pass")
   const legacy = validate(mk("notify"))
-  assert(legacy.issues?.some((i) => /action/.test(i.message)), "notify 应被拒绝")
+  assert(legacy.issues?.some((i) => /action/.test(i.message)), "notify should be rejected")
 })
 
-console.log("\n=== 2. pickRule：planning 阶段递进 ===")
+console.log("\n=== 2. pickRule: planning progression ===")
 
-await t("什么都没发过 → 发 planning 阶段第一条", () => {
+await t("nothing sent yet → first planning rule", () => {
   const p = { selfCheckRound: 0, byRuleId: {} }
   const r = pickRule("planning", p, RULES)
-  assert(r.rule?.id === "bug_root", `实际 ${r.rule?.id}`)
+  assert(r.rule?.id === "bug_root", `got ${r.rule?.id}`)
 })
 
-await t("bug_root 已发过 → 跳到 review", () => {
+await t("bug_root already sent → move to review", () => {
   const p = { selfCheckRound: 0, byRuleId: { bug_root: 1 } }
   const r = pickRule("planning", p, RULES)
-  assert(r.rule?.id === "review", `实际 ${r.rule?.id}`)
+  assert(r.rule?.id === "review", `got ${r.rule?.id}`)
 })
 
-await t("bug_root+review+summarize 都发过 → 转到 notify", () => {
+await t("bug_root + review + summarize all sent → hand over to stop", () => {
   const p = {
     selfCheckRound: 0,
     byRuleId: { bug_root: 1, review: 1, summarize: 1 },
   }
   const r = pickRule("planning", p, RULES)
-  assert(r.rule?.id === "need_confirm", `实际 ${r.rule?.id}`)
+  assert(r.rule?.id === "need_confirm", `got ${r.rule?.id}`)
 })
 
-await t("notify 也发过 → skip", () => {
+await t("the stop rule fired too → skip", () => {
   const p = {
     selfCheckRound: 0,
     byRuleId: { bug_root: 1, review: 1, summarize: 1, need_confirm: 1 },
   }
   const r = pickRule("planning", p, RULES)
-  assert(!r.rule && r.skip === "planning-complete", `实际 ${JSON.stringify(r)}`)
+  assert(!r.rule && r.skip === "planning-complete", `got ${JSON.stringify(r)}`)
 })
 
-console.log("\n=== 3. pickRule：selfchecking 固定顺序 ===")
+console.log("\n=== 3. pickRule: fixed selfchecking order ===")
 
 for (const [round, expect] of [[0, "selfcheck_1"], [1, "selfcheck_2"], [2, "selfcheck_3"], [3, "push"]]) {
-  t(`第 ${round} 轮 → ${expect}`, () => {
+  t(`round ${round} → ${expect}`, () => {
     const p = { selfCheckRound: round, byRuleId: {} }
     const r = pickRule("selfchecking", p, RULES)
-    assert(r.rule?.id === expect, `实际 ${r.rule?.id}`)
+    assert(r.rule?.id === expect, `got ${r.rule?.id}`)
   })
 }
 
-await t("自检全部做完 → skip", () => {
+await t("all self-check rounds done → skip", () => {
   const p = { selfCheckRound: 4, byRuleId: {} }
   const r = pickRule("selfchecking", p, RULES)
-  assert(!r.rule, "不应再有规则")
-  assert(r.skip === "selfcheck-complete", `实际 ${r.skip}`)
+  assert(!r.rule, "no rule should remain")
+  assert(r.skip === "selfcheck-complete", `got ${r.skip}`)
 })
 
-console.log("\n=== 4. pickRule：其他阶段 ===")
+console.log("\n=== 4. pickRule: other stages ===")
 
-await t("implementing → 不推它", () => {
+await t("implementing → no nudge", () => {
   const p = { selfCheckRound: 0, byRuleId: {} }
   const r = pickRule("implementing", p, RULES)
-  assert(!r.rule, "不应发")
-  assert(r.skip === "implementing", `实际 ${r.skip}`)
+  assert(!r.rule, "must not send")
+  assert(r.skip === "implementing", `got ${r.skip}`)
 })
 
-await t("waiting → 发 notify 规则", () => {
+await t("waiting → the stop rule", () => {
   const p = { selfCheckRound: 0, byRuleId: {} }
   const r = pickRule("waiting", p, RULES)
-  assert(r.rule?.id === "need_user", `实际 ${r.rule?.id}`)
+  assert(r.rule?.id === "need_user", `got ${r.rule?.id}`)
 })
 
-await t("finished → 发 notify 规则", () => {
+await t("finished → the stop rule", () => {
   const p = { selfCheckRound: 0, byRuleId: {} }
   const r = pickRule("finished", p, RULES)
-  assert(r.rule?.id === "done", `实际 ${r.rule?.id}`)
+  assert(r.rule?.id === "done", `got ${r.rule?.id}`)
 })
 
-await t("conflict → 发 send 规则", () => {
+await t("conflict → the send rule", () => {
   const p = { selfCheckRound: 0, byRuleId: {} }
   const r = pickRule("conflict", p, RULES)
-  assert(r.rule?.id === "conflict", `实际 ${r.rule?.id}`)
+  assert(r.rule?.id === "conflict", `got ${r.rule?.id}`)
 })
 
-await t("未知阶段 → skip", () => {
+await t("unknown stage → skip", () => {
   const p = { selfCheckRound: 0, byRuleId: {} }
   const r = pickRule("bogus", p, RULES)
-  assert(!r.rule && r.skip === "unknown-stage:bogus", `实际 ${JSON.stringify(r)}`)
+  assert(!r.rule && r.skip === "unknown-stage:bogus", `got ${JSON.stringify(r)}`)
 })
 
-console.log("\n=== 5. 端到端：一条完整流水线 ===")
+console.log("\n=== 5. End to end: one full pipeline ===")
 
-await t("planning → 评审 → 汇总 → 等用户 → 自检×3 → 推送", () => {
+await t("planning → review → summary → wait → self-check x3 → push", () => {
   const seen = []
   let msgs = []
   const progress = () => phaseProgress(msgs, RULES)
 
-  // 每次 pickRule 之后模拟「真的发出去了」
+  // After each pickRule, simulate the message actually being sent.
   const step = (stage) => {
     const r = pickRule(stage, progress(), RULES)
     if (r.rule) {
@@ -267,9 +272,9 @@ await t("planning → 评审 → 汇总 → 等用户 → 自检×3 → 推送",
       "bug_root", "review", "summarize", "need_confirm",
       "selfcheck_1", "selfcheck_2", "selfcheck_3", "push",
     ]),
-    `实际顺序: ${seen.join(" → ")}`,
+    `actual order: ${seen.join(" → ")}`,
   )
 })
 
-console.log(`\n=== ${pass} 通过 / ${fail} 失败 ===`)
+console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

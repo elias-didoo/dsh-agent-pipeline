@@ -1,7 +1,7 @@
 /**
- * 统一测试入口：node test/all.mjs [--fast]
+ * Test entry point: node test/all.mjs [--fast]
  *
- *   --fast  跳过真实 Kev 端到端（需要本地模型在跑）
+ *   --fast  skip the live-model end-to-end suite (needs a local model running)
  */
 
 import { spawnSync } from "node:child_process"
@@ -12,29 +12,29 @@ import { fileURLToPath } from "node:url"
 const HERE = dirname(fileURLToPath(import.meta.url))
 const fast = process.argv.includes("--fast")
 
-// 先跑类型检查（非 node 脚本）
+// Type check first (it is a bash script, not a node script)
 {
-  console.log("\n▶  类型检查（allowJs + checkJs）")
+  console.log("\n▶  Type check (allowJs + checkJs)")
   const r = spawnSync("bash", [join(HERE, "typecheck.sh")], { stdio: "inherit" })
   if (r.status !== 0) {
-    console.log("\n❌ 类型检查未通过，后续测试仍会运行")
+    console.log("\n❌ Type check failed; remaining suites still run")
   }
 }
 
 const suites = [
-  ["contracts.mjs", "DSH 运行时契约（projection/slots/ModuleLoader/v4 来源）"],
-  ["apply.mjs", "apply() 装配（projection 注册与 schema）"],
-  ["context.mjs", "上下文预算与最后一条优先"],
-  ["confidence.mjs", "置信度归一化"],
-  ["phase.mjs", "阶段机（进度推导 + pickRule）"],
-  ["flow.mjs", "主循环分支（假 ctx，不碰真机）"],
-  ["e2e-kev.mjs", "真实 Kev 端到端", !fast],
+  ["contracts.mjs", "DSH runtime contracts (projection/slots/ModuleLoader/v4 sources)"],
+  ["apply.mjs", "apply() wiring (projection registration and schemas)"],
+  ["context.mjs", "Context budget and last-message priority"],
+  ["confidence.mjs", "Confidence normalization"],
+  ["phase.mjs", "Stage machine (progress derivation + pickRule)"],
+  ["flow.mjs", "Main loop branches (fake ctx, never the real host)"],
+  ["e2e-kev.mjs", "Live model end-to-end", !fast],
 ]
 
 let failed = 0
 for (const [file, label, enabled = true] of suites) {
   if (!enabled) {
-    console.log(`\n⏭  ${label} — 已跳过（--fast）`)
+    console.log(`\n⏭  ${label} — skipped (--fast)`)
     continue
   }
   console.log(`\n▶  ${label}`)
@@ -45,5 +45,5 @@ for (const [file, label, enabled = true] of suites) {
   if (r.status !== 0) failed++
 }
 
-console.log(`\n${failed === 0 ? "✅ 全部通过" : `❌ ${failed} 个套件失败`}`)
+console.log(`\n${failed === 0 ? "✅ All suites passed" : `❌ ${failed} suite(s) failed`}`)
 process.exit(failed ? 1 : 0)

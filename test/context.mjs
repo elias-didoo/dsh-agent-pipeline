@@ -1,9 +1,10 @@
 /**
- * 上下文构建测试：预算分配与最后一条优先。
+ * Context construction: budget allocation and last-message priority.
  *
- * 决策依据几乎全在 agent 最后一条回复里：实测同一条输入，
- * 只给 120 字会判错阶段，给完整内容判对。所以最后一条必须优先拿到额度；
- * 但它超长时也不能把历史吃干净，否则「开干」这类锚点会丢失。
+ * Almost all signal lives in the agent's last reply: on identical input, 120
+ * characters picked the wrong stage while the full text picked the right one.
+ * So the last message must get budget first — but when it is enormous it must
+ * not swallow the history either, or anchors like "go ahead" are lost.
  */
 
 const { buildState, estimateTokens } = await import("../lib/context.js")
@@ -44,92 +45,93 @@ function mkMsgs(rounds, lastLen) {
 
 const countHist = (state) => (state.match(/第\d+轮用户/g) ?? []).length
 
-console.log("=== 1. token 估算 ===")
+console.log("=== 1. Token estimation ===")
 
-await t("1000 汉字 ≈ 1000 token", () => {
+await t("1000 CJK characters ≈ 1000 tokens", () => {
   const n = estimateTokens("中".repeat(1000))
-  assert(n === 1000, `实际 ${n}`)
+  assert(n === 1000, `got ${n}`)
 })
 
-await t("1000 ASCII ≈ 250 token", () => {
+await t("1000 ASCII characters ≈ 250 tokens", () => {
   const n = estimateTokens("x".repeat(1000))
-  assert(n === 250, `实际 ${n}`)
+  assert(n === 250, `got ${n}`)
 })
 
-await t("空文本 → 0", () => {
-  assert(estimateTokens("") === 0, "应为 0")
+await t("empty text → 0", () => {
+  assert(estimateTokens("") === 0, "should be 0")
 })
 
-console.log("\n=== 2. 最后一条优先完整保留 ===")
+console.log("\n=== 2. Last message kept whole when it fits ===")
 
-await t("最后一条不超预算时完整保留", () => {
+await t("last message preserved intact when within budget", () => {
   const { state, stats } = buildState(mkMsgs(5, 100), CFG, 8192)
-  assert(state.includes("开头标记"), "应含开头")
-  assert(state.includes("结尾标记"), "应含结尾")
-  assert(stats.lastTruncated === false, "不应截断")
+  assert(state.includes("开头标记"), "should contain the head marker")
+  assert(state.includes("结尾标记"), "should contain the tail marker")
+  assert(stats.lastTruncated === false, "should not be truncated")
 })
 
-await t("历史轮次受 maxTurns 限制", () => {
+await t("history is capped by maxTurns", () => {
   const { state, stats } = buildState(mkMsgs(10, 100), CFG, 8192)
-  assert(stats.turns <= 3, `turns 应为 <=3，实际 ${stats.turns}`)
-  assert(countHist(state) <= 3, `历史条数应 <=3，实际 ${countHist(state)}`)
+  assert(stats.turns <= 3, `turns should be <= 3, got ${stats.turns}`)
+  assert(countHist(state) <= 3, `history entries should be <= 3, got ${countHist(state)}`)
 })
 
-console.log("\n=== 3. 最后一条超预算时的取舍 ===")
+console.log("\n=== 3. Trade-off when the last message exceeds budget ===")
 
-await t("超预算时截断最后一条，但保留头尾", () => {
+await t("over budget truncates the last message but keeps head and tail", () => {
   const { state, stats } = buildState(mkMsgs(10, 20000), CFG, 8192)
-  assert(stats.lastTruncated === true, "应标记截断")
-  assert(state.includes("开头标记"), "截断后应保留开头")
-  assert(state.includes("结尾标记"), "截断后应保留结尾")
+  assert(stats.lastTruncated === true, "should be flagged as truncated")
+  assert(state.includes("开头标记"), "head marker should survive truncation")
+  assert(state.includes("结尾标记"), "tail marker should survive truncation")
 })
 
-await t("超预算时仍给历史留出额度（不把预算吃光）", () => {
-  // 这条是回归守卫：早期实现让最后一条独占预算，历史一条都进不来
+await t("over budget still leaves room for history", () => {
+  // Regression guard: an early version let the last message take the whole
+  // budget, so no history fit at all.
   const { state } = buildState(mkMsgs(10, 20000), CFG, 8192)
-  assert(countHist(state) > 0, `历史应为非空，实际 ${countHist(state)} 条`)
+  assert(countHist(state) > 0, `history should be non-empty, got ${countHist(state)}`)
 })
 
-await t("不超预算时不标记截断", () => {
+await t("within budget leaves lastTruncated false", () => {
   const { stats } = buildState(mkMsgs(10, 3000), CFG, 8192)
-  assert(stats.lastTruncated === false, "3000 字不该触发截断")
+  assert(stats.lastTruncated === false, "3000 chars must not trigger truncation")
 })
 
-await t("预算用量不超过上限", () => {
+await t("budget usage never exceeds the limit", () => {
   for (const len of [100, 3000, 8000, 20000]) {
     const { stats } = buildState(mkMsgs(10, len), CFG, 8192)
-    assert(stats.used <= stats.budget, `末条 ${len} 字时 used ${stats.used} > budget ${stats.budget}`)
+    assert(stats.used <= stats.budget, `last message ${len} chars: used ${stats.used} > budget ${stats.budget}`)
   }
 })
 
-console.log("\n=== 4. 消息过滤与标签 ===")
+console.log("\n=== 4. Message filtering and labels ===")
 
-await t("只保留白名单来源的用户消息", () => {
+await t("only allowlisted user-message kinds are kept", () => {
   const msgs = [
     { role: "user", source: { kind: "skill-catalog" }, content: [{ type: "text", text: "噪声" }], time: now - 1000 },
     { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "真实用户" }], time: now - 900 },
     { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text: "回复" }], time: now - 500 },
   ]
   const { state } = buildState(msgs, CFG, 8192)
-  assert(!state.includes("噪声"), "skill-catalog 应被过滤")
-  assert(state.includes("真实用户"), "真人消息应保留")
+  assert(!state.includes("噪声"), "skill-catalog should be filtered out")
+  assert(state.includes("真实用户"), "a real user message should be kept")
 })
 
-await t("用户与插件消息的标签不同", () => {
+await t("user and plugin messages get different labels", () => {
   const msgs = [
     { role: "user", source: { kind: "decision", ruleId: "r1" }, content: [{ type: "text", text: "插件发的" }], time: now - 900 },
     { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "人发的" }], time: now - 800 },
   ]
   const { state } = buildState(msgs, CFG, 8192)
-  assert(state.includes("【插件】"), "应有【插件】标签")
-  assert(state.includes("【用户】"), "应有【用户】标签")
+  assert(state.includes("【Plugin】"), "should carry a 【Plugin】 label")
+  assert(state.includes("【User】"), "should carry a 【User】 label")
 })
 
-await t("空消息列表返回空状态", () => {
+await t("empty message list yields an empty state", () => {
   const { state, stats } = buildState([], CFG, 8192)
-  assert(state === "", `应为空串，实际 ${JSON.stringify(state)}`)
-  assert(stats.eligible === 0, "eligible 应为 0")
+  assert(state === "", `should be an empty string, got ${JSON.stringify(state)}`)
+  assert(stats.eligible === 0, "eligible should be 0")
 })
 
-console.log(`\n=== ${pass} 通过 / ${fail} 失败 ===`)
+console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
