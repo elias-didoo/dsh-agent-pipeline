@@ -1,0 +1,42 @@
+{
+  "name": "dsh-decision-orchestrator",
+  "version": "0.1.0",
+  "description": "Let a local decision model judge what your agent should do next, and either nudge it along or stop and wait for you.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "agent",
+    "orchestration",
+    "llama.cpp"
+  ],
+  "exports": {
+    ".": "./host.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "host.js",
+    "client.js",
+    "lib"
+  ],
+  "scripts": {
+    "test": "node test/all.mjs",
+    "test:fast": "node test/all.mjs --fast",
+    "typecheck": "./test/typecheck.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-context-menu",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  }
+}

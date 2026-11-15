@@ -1,0 +1,20 @@
+# 依赖（本项目零运行时依赖，仅测试时可能用到）
+node_modules/
+
+# 日志
+*.log
+logs/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 测试与类型检查的临时产物
+.tsbuildinfo
+coverage/
+
+# 本地环境变量
+.env
+.env.*
