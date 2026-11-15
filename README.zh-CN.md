@@ -33,7 +33,7 @@ npm test          # 可选，验证环境
 }
 ```
 
-最后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里挂载（配置样例见下文「决策点怎么配」）：
+最后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里挂载（配置样例见下文[「流程怎么配」](#流程怎么配)）：
 
 ```yaml
 - insert:
