@@ -1,18 +1,18 @@
 /**
- * decision-orchestrator client: workspace context menu + read-only rules panel.
+ * decision-orchestrator client: the standing flow panel.
  *
- * GUI is read-only display; edits go through the config in cordis.patch.yml.
- * Per practices.md: tunables belong in Config, and the user edits them at the
- * patch layer.
+ * One panel, docked under the composer: the running flow's steps, marked done /
+ * in progress / pending, with pause, resume and cancel. It renders from the
+ * session projection rather than from the current turn, which is what makes it
+ * stay put when the user sends a message — the failure mode of a per-turn panel.
  *
- * Registration mirrors the built-in client plugins (dsh-client-ui-workspace):
- *   ctx.slots.inject(`shell.overlay`, function* () {
+ * Registration mirrors the built-in client plugins:
+ *   ctx.slots.inject(`conversation.composer.dock`, function* () {
  *     yield ctx.slots.register({ name, id, locale, inject }, Component)
  *   })
  *
- * Source, comments and docs are English throughout this repo. UI strings below
- * stay Chinese because they are what the user reads in the panel, and the stage
- * criteria this plugin feeds the model are Chinese for the same reason.
+ * Source, comments and docs are English throughout this repo. UI strings stay
+ * bilingual in DICT because they are what the user reads in the panel.
  */
 
 window.__ModuleLoader__.load({
@@ -22,224 +22,158 @@ window.__ModuleLoader__.load({
     const react = require("react")
 
     const h = react.createElement
-    const { useEffect, useState } = react
 
     const PROJECTION_KEY = "decision-orchestrator"
 
-    /**
-     * Panel strings.
-     *
-     * Registered as one namespace so the panel follows the DSH language setting
-     * like any host component; nothing here is hardcoded per locale.
-     */
     const NS = "decision-orchestrator"
 
     const DICT = {
       zh: {
-        "menu.label": "决策规则…",
-        "panel.title": "决策规则",
-        "panel.close": "关闭",
-        "action.send": "自动发送提示词",
-        "action.stop": "停下来等你",
-        "action.silent": "不做任何动作",
-        "rule.noId": "(无 id)",
-        "rule.stopPrefix": "停下：",
-        "status.enabled": "已启用",
-        "status.disabled": "未启用",
-        "meta.noSession": "此工作区尚无会话，规则状态需先建一个会话才可见",
-        "empty.noDecisions": "尚未配置决策点",
-        "empty.notEnabled": "此工作区未启用决策编排",
-        "hint.title": "如何修改",
-        "hint.body": "编辑 cordis.patch.yml 中本插件的 config，改完重启 DSH 生效。",
+        "flow.pause": "暂停",
+        "flow.resume": "恢复",
+        "flow.cancel": "取消",
+        "flow.paused": "已暂停",
+        "flow.done": "已完成",
+        "flow.cancelled": "已取消",
+        "flow.progress": "{done}/{total}",
+        "flow.hint": "流程由 agent 启动，也可以在这里手动启动。暂停只停止自动推进，agent 仍可以继续工作。",
+        "step.done": "已完成",
+        "step.ongoing": "进行中",
+        "step.pending": "待完成",
       },
       en: {
-        "menu.label": "Decision rules…",
-        "panel.title": "Decision rules",
-        "panel.close": "Close",
-        "action.send": "Send prompt automatically",
-        "action.stop": "Stop and wait for you",
-        "action.silent": "Do nothing",
-        "rule.noId": "(no id)",
-        "rule.stopPrefix": "Stops: ",
-        "status.enabled": "Enabled",
-        "status.disabled": "Not enabled",
-        "meta.noSession": "No session in this workspace yet — rule state appears once one exists",
-        "empty.noDecisions": "No decision points configured yet",
-        "empty.notEnabled": "Decision orchestration is not enabled for this workspace",
-        "hint.title": "How to change these",
-        "hint.body": "Edit this plugin's config in cordis.patch.yml, then restart DSH.",
+        "flow.pause": "Pause",
+        "flow.resume": "Resume",
+        "flow.cancel": "Cancel",
+        "flow.paused": "Paused",
+        "flow.done": "Done",
+        "flow.cancelled": "Cancelled",
+        "flow.progress": "{done}/{total}",
+        "flow.hint": "The agent starts a flow; you can also start one here. Pausing stops the automatic advance — the agent may keep working.",
+        "step.done": "Done",
+        "step.ongoing": "In progress",
+        "step.pending": "Pending",
       },
     }
 
     /**
-     * Read the rules this plugin projected for that workspace.
+     * Panel styles.
      *
-     * The host projection declares wire.view + summary:true, so the client
-     * reads the precomputed value straight from the session summary's
-     * projectionValues.
+     * Theme tokens only, so light and dark both work without a second set of
+     * rules. Class names carry the plugin prefix against colliding with a host
+     * component.
      */
-    function readProjection(ctx, workspaceId) {
-      try {
-        const sessions = ctx.sessions?.list?.getSnapshot?.()
-        const byId = sessions?.byId ?? {}
-
-        // Preferred: a session in that workspace
-        let wsSessionIds = []
-        try {
-          const ws = ctx.workspaces?.list?.getSnapshot?.()
-          const item = ws?.items?.find?.((i) => i.workspaceId === workspaceId)
-          if (Array.isArray(item?.sessionIds)) wsSessionIds = item.sessionIds
-        } catch { /* ignore */ }
-
-        for (const id of wsSessionIds) {
-          const v = byId[id]?.projectionValues?.[PROJECTION_KEY]
-          if (v) return { sessionId: id, view: v }
-        }
-        // Fallback: any session carrying this projection
-        for (const id of Object.keys(byId)) {
-          const v = byId[id]?.projectionValues?.[PROJECTION_KEY]
-          if (v) return { sessionId: id, view: v }
-        }
-      } catch { /* ignore */ }
-      return undefined
-    }
-
-    /** Styles, built on --dsw-alias-* theme tokens. */
     const STYLE = `
-.do-overlay{position:fixed;inset:0;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center;z-index:10000}
-.do-panel{width:min(680px,92vw);max-height:82vh;overflow:auto;background:var(--dsw-alias-background-primary,#1e1e1e);color:var(--dsw-alias-text-primary,#ddd);border:1px solid var(--dsw-alias-border-primary,#444);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.45);padding:20px;font-size:13px;line-height:1.55;box-sizing:border-box}
-.do-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-.do-title{font-size:15px;font-weight:600}
-.do-close{background:transparent;border:none;color:var(--dsw-alias-text-secondary,#999);font-size:16px;cursor:pointer;padding:2px 8px;border-radius:4px;line-height:1}
-.do-close:hover{background:var(--dsw-alias-background-secondary,#2a2a2a)}
-.do-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-.do-badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px}
-.do-badge-on{background:rgba(80,180,120,.18);color:#4caf7d}
-.do-badge-off{background:rgba(150,150,150,.16);color:#999}
-.do-meta{font-size:12px;color:var(--dsw-alias-text-secondary,#999)}
-.do-warn{color:#d9a441}
-.do-empty{padding:20px 0;color:var(--dsw-alias-text-secondary,#999)}
-.do-rules{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
-.do-rule{border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:8px;padding:10px 12px;background:var(--dsw-alias-background-secondary,rgba(255,255,255,.03))}
-.do-rule-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-.do-rule-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--dsw-alias-text-link,#6aa8ff)}
-.do-rule-action{font-size:11px;color:var(--dsw-alias-text-secondary,#999);margin-left:auto}
-.do-rule-scene{color:var(--dsw-alias-text-primary,#ddd)}
-.do-rule-prompt{margin-top:6px;color:var(--dsw-alias-text-secondary,#aaa);font-size:12px}
-.do-hint{border-top:1px solid var(--dsw-alias-border-primary,#333);padding-top:12px}
-.do-hint-title{font-weight:600;margin-bottom:4px;font-size:12px;color:var(--dsw-alias-text-secondary,#aaa)}
-.do-hint-body{color:var(--dsw-alias-text-secondary,#999);font-size:12px}
-.do-hint code{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));padding:1px 5px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.do-flow{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:8px;background:var(--dsw-alias-background-secondary,rgba(255,255,255,.03));font-size:12px;line-height:1.5;box-sizing:border-box}
+.do-flow-head{display:flex;align-items:center;gap:8px}
+.do-flow-title{font-weight:600;color:var(--dsw-alias-text-primary,#ddd)}
+.do-flow-count{color:var(--dsw-alias-text-secondary,#999);font-variant-numeric:tabular-nums}
+.do-flow-badge{padding:1px 8px;border-radius:9px;background:rgba(150,150,150,.16);color:var(--dsw-alias-text-secondary,#999)}
+.do-flow-note{color:var(--dsw-alias-text-secondary,#999);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
+.do-flow-spacer{flex:1}
+.do-flow-btn{background:transparent;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);color:var(--dsw-alias-text-secondary,#aaa);border-radius:5px;padding:1px 8px;font-size:11px;cursor:pointer;line-height:1.6}
+.do-flow-btn:hover{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));color:var(--dsw-alias-text-primary,#ddd)}
+.do-flow-steps{display:flex;flex-wrap:wrap;gap:4px 10px}
+.do-flow-step{display:flex;align-items:center;gap:5px;color:var(--dsw-alias-text-secondary,#999)}
+.do-flow-step-done{color:var(--dsw-alias-text-primary,#ccc)}
+.do-flow-step-ongoing{color:var(--dsw-alias-text-link,#6aa8ff);font-weight:600}
+.do-flow-mark{font-size:11px;line-height:1}
 `
 
-    /**
-     * Render one decision point.
-     *
-     * The `when` text is shown as written: it is both the label the user gave it
-     * and the description the model matches against, so showing it is the most
-     * useful thing the panel can do.
-     */
-    function renderDecision(d, t) {
-      const action = d?.do ?? "silent"
-      return h(
-        "div",
-        { className: "do-rule", key: d.id },
-        h(
-          "div",
-          { className: "do-rule-head" },
-          h("code", { className: "do-rule-id" }, d.id ?? t("rule.noId")),
-          h("span", { className: "do-rule-action" }, t(`action.${action}`)),
-        ),
-        h("div", { className: "do-rule-scene" }, d.when ?? ""),
-        action === "send" && d.prompt
-          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${d.prompt}`)
-          : null,
-        action === "stop" && d.notifyText
-          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${t("rule.stopPrefix")}${d.notifyText}`)
-          : null,
-      )
-    }
-
-    /** Read-only rules panel. */
-    function RulesPanel({ info, onClose, t, locale }) {
-      useEffect(() => {
-        const onKey = (e) => { if (e.key === "Escape") onClose() }
-        window.addEventListener("keydown", onKey)
-        return () => window.removeEventListener("keydown", onKey)
-      }, [onClose])
-
-      const decisions = info?.decisions ?? []
-      const enabled = info?.enabled === true
-
-      return h(
-        "div",
-        {
-          className: "do-overlay",
-          role: "presentation",
-          onClick: (e) => { if (e.target === e.currentTarget) onClose() },
-        },
-        h(
-          "div",
-          { className: "do-panel", role: "dialog", "aria-modal": "true", "aria-label": t("panel.title") },
-          h(
-            "div",
-            { className: "do-header" },
-            h("div", { className: "do-title" }, `${t("panel.title")} · ${info?.displayTitle ?? ""}`),
-            h("button", { className: "do-close", onClick: onClose, "aria-label": t("panel.close") }, "\u2715"),
-          ),
-
-          h(
-            "div",
-            { className: "do-status" },
-            h(
-              "span",
-              { className: enabled ? "do-badge do-badge-on" : "do-badge do-badge-off" },
-              enabled ? t("status.enabled") : t("status.disabled"),
-            ),
-            info?.hasSession === false
-              ? h("span", { className: "do-meta do-warn" }, t("meta.noSession"))
-              : null,
-          ),
-
-          decisions.length === 0
-            ? h("div", { className: "do-empty" }, enabled ? t("empty.noDecisions") : t("empty.notEnabled"))
-            : h("div", { className: "do-rules" }, ...decisions.map((d) => renderDecision(d, t))),
-
-          h(
-            "div",
-            { className: "do-hint" },
-            h("div", { className: "do-hint-title" }, t("hint.title")),
-            h(
-              "div",
-              { className: "do-hint-body" },
-              t("hint.body"),
-            ),
-          ),
-        ),
-      )
-    }
-
-    /** Open/close state provided by ctx (module-level; one instance suffices). */
-    let setInfo = null
-
-    /** Component handed to the slot, closed over the resolved language. */
-    function makePanelHost(t, activeLocale) {
-      return function PanelHost() {
-        const [info, setState] = useState(null)
-        setInfo = setState
-        if (info === null) return null
-        return h(RulesPanel, { info, onClose: () => setState(null), t, locale: activeLocale() })
+    /** Read one locale key, falling back to English then to the key itself. */
+    function makeT(activeLocale) {
+      return (key, vars) => {
+        const dict = DICT[activeLocale()] ?? DICT.en
+        let text = dict[key] ?? DICT.en[key] ?? key
+        for (const [name, value] of Object.entries(vars ?? {})) {
+          text = text.replaceAll(`{${name}}`, String(value))
+        }
+        return text
       }
+    }
+
+    /** The marker and class for one step's state. */
+    function stepMark(status) {
+      if (status === "done") return { mark: "\u25CF", cls: "do-flow-step-done" }
+      if (status === "ongoing") return { mark: "\u25D0", cls: "do-flow-step-ongoing" }
+      return { mark: "\u25CB", cls: "" }
+    }
+
+    /**
+     * The standing panel.
+     *
+     * Renders through `useProjection`, which subscribes to the smallest slice it
+     * needs: the view the host already computed. The Client never folds session
+     * events itself.
+     */
+    function FlowPanel(props) {
+      const { t, flow, sessionId, onControl } = props
+      if (!flow) return null
+
+      const finished = flow.status === "done" || flow.status === "cancelled"
+      const badge = flow.status === "paused" ? t("flow.paused")
+        : flow.status === "done" ? t("flow.done")
+          : flow.status === "cancelled" ? t("flow.cancelled")
+            : ""
+
+      return h(
+        "div",
+        { className: "do-flow", "data-flow": flow.flow },
+        h(
+          "div",
+          { className: "do-flow-head" },
+          h("span", { className: "do-flow-title" }, flow.label ?? flow.flow),
+          h("span", { className: "do-flow-count" }, t("flow.progress", { done: flow.done, total: flow.total })),
+          badge ? h("span", { className: "do-flow-badge" }, badge) : null,
+          flow.note ? h("span", { className: "do-flow-note", title: flow.note }, flow.note) : null,
+          h("span", { className: "do-flow-spacer" }),
+          // A finished flow offers nothing: pause and cancel would both be lies.
+          finished ? null : h(
+            "button",
+            {
+              className: "do-flow-btn",
+              type: "button",
+              onClick: () => onControl(sessionId, flow.status === "paused" ? "resume" : "pause"),
+              title: t("flow.hint"),
+            },
+            flow.status === "paused" ? t("flow.resume") : t("flow.pause"),
+          ),
+          finished ? null : h(
+            "button",
+            { className: "do-flow-btn", type: "button", onClick: () => onControl(sessionId, "cancel") },
+            t("flow.cancel"),
+          ),
+        ),
+        h(
+          "div",
+          { className: "do-flow-steps", role: "list" },
+          ...(flow.steps ?? []).map((step) => {
+            const { mark, cls } = stepMark(step.status)
+            return h(
+              "span",
+              {
+                key: step.id,
+                role: "listitem",
+                className: `do-flow-step ${cls}`.trim(),
+                // The mark is decorative; the status is announced in words.
+                title: t(`step.${step.status}`),
+                "aria-label": `${step.label}: ${t(`step.${step.status}`)}`,
+              },
+              h("span", { className: "do-flow-mark", "aria-hidden": "true" }, mark),
+              h("span", null, step.label ?? step.id),
+            )
+          }),
+        ),
+      )
     }
 
     function applyClient(ctx) {
       // ── Panel strings follow the DSH language setting ──
-      // The service is fetched rather than injected: a host without it still
-      // renders the panel, using the English dictionary below.
+      // Fetched rather than injected: a host without the locale service still
+      // renders the panel, using the English dictionary.
       //
-      // The active language is read on every call, never captured once, so a
-      // language switch takes effect the next time the panel renders instead of
-      // leaving stale text until a reload.
+      // Read on every call, never captured once, so a language switch takes
+      // effect on the next render instead of leaving stale text until a reload.
       let localeSvc
       try {
         localeSvc = ctx.get?.("locale")
@@ -256,12 +190,6 @@ window.__ModuleLoader__.load({
         return "en"
       }
 
-      const t = (key) => {
-        const dict = DICT[activeLocale()] ?? DICT.en
-        return dict[key] ?? DICT.en[key] ?? key
-      }
-
-      // Inject styles
       try {
         if (typeof document !== "undefined" && !document.getElementById("do-style")) {
           const el = document.createElement("style")
@@ -271,58 +199,52 @@ window.__ModuleLoader__.load({
         }
       } catch { /* ignore */ }
 
-      // ── Workspace context menu ──
-      ctx.effect(
-        () =>
-          ctx.contextMenus.register({
-            id: "workspace.decisionOrchestrator",
-            target: "workspace",
-            order: 250, // between rename(100) and delete(300)
-            resolve: ({ workspaceId, displayTitle }) => [
-              {
-                id: "rules",
-                label: t("menu.label"),
-                run: () => {
-                  const found = readProjection(ctx, workspaceId)
-                  const view = found?.view
-                  if (typeof setInfo === "function") {
-                    setInfo({
-                      workspaceId,
-                      displayTitle,
-                      enabled: view?.enabled === true,
-                      decisions: Array.isArray(view?.decisions) ? view.decisions : [],
-                      hasSession: found !== undefined,
-                    })
-                  }
-                },
-              },
-            ],
-          }),
-        "decision-orchestrator: workspace menu",
-      )
+      /**
+       * Ask the host to pause, resume or cancel.
+       *
+       * Runs the host's `flow` command through `ctx.remote.commands.execute()`,
+       * which is the documented route for a UI action that mutates host state.
+       * The panel does not write state itself: the host owns the flow, and a
+       * client-side write would be overwritten by the next projection anyway.
+       */
+      const onControl = (sessionId, action) => {
+        try {
+          const commands = ctx.remote?.commands
+          if (!commands || typeof commands.execute !== "function") return
+          commands.execute(sessionId, `/flow ${action}`, [], new AbortController().signal)
+        } catch { /* ignore */ }
+      }
 
-      // ── Mount the panel into shell.overlay ──
-      // Mirrors built-in plugins: inject(slot, function* () { yield register(def, Component) })
-      ctx.slots.inject("shell.overlay", function* () {
+      ctx.slots.inject("conversation.composer.dock", function* () {
         yield ctx.slots.register(
           {
-            name: "shell.overlay",
-            id: "decision-orchestrator.rules",
-            inject: () => ({}),
+            name: NS,
+            id: "flow",
+            // Below the shipped dock entries: this is ambient status, not a
+            // control the user reaches for first.
+            order: 20,
+            label: () => {
+              const t = makeT(activeLocale)
+              return t("flow.pause")
+            },
           },
-          makePanelHost(t, activeLocale),
+          function FlowDock(props) {
+            const t = makeT(activeLocale)
+            // The host already computed the view; read that instead of folding
+            // session events here.
+            let value
+            try {
+              value = props.useProjection?.(PROJECTION_KEY)
+            } catch { /* no projection yet */ }
+            const view = value?.value ?? value
+            const flow = view?.flow ?? null
+            if (!flow) return null
+            return h(FlowPanel, { t, flow, sessionId: props.sessionId, onControl })
+          },
         )
       })
     }
 
-    return {
-      // Every service used must be declared: Cordis' Proxy throws for any
-      // ctx.xxx that was not injected, and a swallowed error silently degrades
-      // into "this workspace has no session".
-      inject: ["slots", "contextMenus", "sessions", "workspaces"],
-      apply(ctx) {
-        applyClient(ctx)
-      },
-    }
+    return { apply: applyClient }
   },
 })

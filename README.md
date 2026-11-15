@@ -2,9 +2,9 @@
 
 [中文](README.zh-CN.md) | **English**
 
-A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that judges what an agent should do after each turn, using a local decision model, and then follows the rules you wrote.
+A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that runs a workspace's fixed review pipeline, sending the next prompt whenever the agent finishes the last one, and asking a local decision model only where the pipeline genuinely forks.
 
-> **It does not think for you.** It hands one judgement — "what should happen next?" — to a model, then executes the rules you configured.
+> **It does not think for you.** You decide the process once; it walks it. The model is consulted only at the forks you left open.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ Add the dependency to `~/.dsh/profiles/desktop/package.json`:
 }
 ```
 
-Mount it in `~/.dsh/profiles/desktop/cordis.patch.yml` (full config example under [Configuring rules](#configuring-rules)):
+Mount it in `~/.dsh/profiles/desktop/cordis.patch.yml` (full config example under [Configuring a flow](#configuring-a-flow)):
 
 ```yaml
 - insert:
@@ -48,166 +48,137 @@ Mount it in `~/.dsh/profiles/desktop/cordis.patch.yml` (full config example unde
 ## How it works
 
 ```
-you ask → agent works → agent stops
+you say what you want → agent calls start_flow("requirement")
                           ↓
-              plugin reads the agent's last reply + the previous few turns
+        the plugin walks a fixed step list, one step per turn
                           ↓
-              local model picks the decision point that fits
-                          ↓
-              plugin checks the log: has this one already fired?
-                          ↓
-        ┌─────────────────┼─────────────────┐
-      send            stop and wait      do nothing
+     ┌────────────────┬────────────────┬────────────────┬─────────────┐
+   send            stop             wait-user          branch
+ a prompt      pause for you     wait for a phrase   ask the model
 ```
 
-**Why the split.** Choosing what the situation is belongs to the model: it reads
-the conversation, including the plugin's own messages, and matches it against
-the `when` text you wrote. Remembering what has already happened belongs to the
-plugin: it counts its own messages in the log, which is exact and costs nothing.
+**Why the split.** A workspace's process is fixed — the steps, their order and
+their wording are things you decided once. Walking that process belongs in
+code: it is deterministic, it costs nothing, and it cannot drift. What belongs
+to the model is the one place the process genuinely forks, such as "does this
+self-check still have problems to fix, or is it clean?".
 
-Neither half guesses at the other's job. The model is never asked to keep score,
-and the plugin never tries to interpret prose.
+Measured on the shipped configuration, that took the model from being asked on
+every turn with twelve options to being asked once per pipeline with two.
 
-## Configuring decision points
+**Flows are built from shared steps.** Three pipelines share most of their
+steps; only the opening differs. Steps are defined once in a table and referenced
+by id, so changing a prompt is one edit rather than three that can drift apart.
+
+## Configuring a flow
 
 Edit this plugin's `config` inside `~/.dsh/profiles/desktop/cordis.patch.yml`:
 
 ```yaml
-- id: decision-orchestrator
-  name: "dsh-decision-orchestrator"
-  config:
-    model:
-      baseUrl: http://127.0.0.1:8080
-      name: kev-latest
-    workspaces:
-      - path: /Users/you/project
-        enabled: true
-        decisions:
-          - id: bug_root
-            when: The user reported a bug and the agent has investigated, but the root cause is still a guess and the plugin has not yet asked for evidence.
-            do: send
-            prompt: Is that a guess or a proven root cause? If you need anything from the browser console, go get it yourself — the CDP and login scripts are already there.
+workspaces:
+  - path: /Users/you/project
+    enabled: true
+    steps:
+      - id: review
+        label: { en: Plan review, zh: 方案评审 }
+        do: send
+        prompt: Read the docs and code you actually need. Double-check whether…
 
-          - id: review
-            when: The agent just produced a technical plan or assessment and the plugin has not yet sent its review request.
-            do: send
-            prompt: Read the docs and code you actually need. Double-check whether the assessment is complete…
+      - id: confirm
+        label: { en: Wait for go-ahead, zh: 等你决定开干 }
+        do: stop
+        notifyText: Plan is ready — your call whether to start.
 
-          - id: summarize
-            when: The plugin already sent its review request and the agent has answered it, but the plugin has not yet asked for a consolidated list.
-            do: send
-            prompt: List every change you plan to make, with all the important points.
+      - id: start_work
+        label: { en: User says go, zh: 用户说开干 }
+        do: wait-user
+        prompt: Say "go" when you want me to start checking.
+        expect: go
 
-          - id: confirm
-            when: The agent has listed its planned changes and is waiting for the user to decide whether to start.
-            do: stop
-            notifyText: Plan is ready — your call whether to start.
+      - id: selfcheck_branch
+        label: { en: Any problems left?, zh: 还有问题吗 }
+        do: branch
+        question: Does the agent say problems remain, or that the check passed?
+        options:
+          problems: selfcheck_3
+          clean: push
 
-          - id: finished
-            when: The work is pushed (the reply contains HEAD -> main) or the agent has explicitly declared the task complete.
-            do: stop
-            notifyText: Work is done.
+      - id: selfcheck_3
+        do: send
+        prompt: Every self-check finds something new. Do you need another round?
+
+      - id: push
+        do: send
+        prompt: Push it.
+
+    flows:
+      - name: requirement
+        label: { en: Requirement, zh: 需求流程 }
+        steps: [review, confirm, start_work, selfcheck_branch, selfcheck_3, push]
 ```
 
 `fixtures/brandu.yml` holds the full working set this plugin was built against
-— twelve decision points covering a review loop, three self-check rounds and
-conflict handling. The example above is trimmed to keep this section readable.
+— twelve steps and three flows covering requirement, bug and conflict handling.
 
-## Anatomy of a decision point
+## Anatomy of a step
 
-A decision point is one thing the plugin may do next. The model reads the
-conversation and picks whichever one describes the situation; the plugin
-carries it out.
+A step is one thing the plugin does when the flow reaches it.
 
 | Field | Required | Meaning |
 |---|---|---|
 | `id` | yes | Stable name. Also the tag on the message it sends. |
-| `when` | yes | **The situation this applies to, in words.** This is the model's input. |
-| `do` | yes | `send` a message, `stop` and wait for the user, or `silent` do nothing. |
-| `prompt` | for `send` | The message text. |
-| `notifyText` | no | Panel label explaining what a `stop` means. |
+| `do` | yes | `send`, `stop`, `wait-user` or `branch`. |
+| `label` | no | `{ en, zh }` shown in the panel. Falls back to the first line of prose. |
+| `prompt` | `send`, `wait-user` | The message text. For `wait-user`, what tells the user what to say. |
+| `notifyText` | no | Panel text explaining what a `stop` means. |
+| `expect` | no | `wait-user` only: the phrase the user must say. Empty accepts any message. |
+| `question` + `options` | `branch` | A two-way question and the step id each answer leads to. |
 
-There is no stage list, no behaviour table and no condition expression. `when`
-is prose because the model is better at recognising "the agent still says it
-found problems" than any pattern would be.
+### What each kind does
 
-### Ordering
+**`send`** posts its prompt and advances. No model involved, which is the
+common case.
 
-**Decision points fire once each.** Order in the config does not sequence them
-— the model picks by situation, not by position. What order affects is only how
-the list reads in the panel.
+**`stop`** advances and then holds: the plugin goes quiet until the user speaks.
+Use it where you want to look at the plan before work starts.
 
-The plugin guarantees a `send` never repeats: it counts the messages it has
-already sent, by `id`, and refuses to send the same one twice. A `stop` halts
-auto-advance once and then stays quiet until the user speaks again.
+**`wait-user`** advances only when the newest human message contains `expect`
+and was written after the flow arrived here. That second condition is what stops
+an old "go" from satisfying every later wait. It is not the same as `stop`: a
+`stop` resumes on any reply, a `wait-user` resumes only on the phrase.
 
-**When the model's first choice has already fired**, the plugin takes the
-next-best candidate above a low floor instead of ending the turn. Two adjacent
-decision points can score within a point of each other — measured 29.9% and
-29.2% on a third self-check round — and there the model's second choice is the
-right one while its first is the same situation one round earlier. The `pick`
-log entry carries `fellBackFrom` when this happens.
+**`branch`** asks the model a two-way question and jumps to the chosen step.
+Every step the branch skipped stays pending, so the panel shows what was not
+done rather than claiming it was.
 
-That fallback floor is lower than `confidenceFloor`, on purpose. The normal
-floor guards a first answer, where a low score means the conversation matched
-nothing in particular. A fallback follows an answer that already matched
-something, so its neighbour is a correction rather than a guess.`
-A spent `stop` never falls back: stopping is a decision to wait, not a step.
+### Flow rules the validator enforces
 
-### Writing `when` that works
+- Every step a flow lists must exist in the shared table.
+- A flow may not list the same step twice — the log records that a prompt was
+  sent, not which visit sent it, so a repeat makes progress unrecoverable.
+- A branch has exactly two options, and both must point inside the same flow.
+- A flow needs at least one `stop` or `wait-user`, or it would run to the end
+  without ever pausing for you.
 
-The model separates situations by the boundaries between them, and it can only
-use what is in the conversation. Two rules, both measured:
+Configuration is validated at load. A broken reference fails loudly instead of
+running until it reaches the bad step and stopping in a state nobody planned.
 
-**Quote what the plugin already sent.** The conversation contains the plugin's
-own messages, so name them by their opening words:
+## Starting a flow
 
-```yaml
-- id: summarize
-  when: The review request「Read the docs and code you actually need」has already
-        appeared, and the agent just replied to it — but the agent's reply is a
-        review conclusion, not a numbered list.
-- id: confirm
-  when: The plugin's「List every change you plan to make」message has appeared,
-        and the agent's reply is a numbered list of changes.
+The agent starts a flow by calling the `start_flow` tool — the same mechanism as
+`create_goal` or `todo_write`. You ask in words; the agent turns that into the
+call.
+
+```
+you: 评估如下需求，仅评估，不要动仓库：xxx
+agent → start_flow({ flow: "requirement" })
 ```
 
-Without those quotes the two entries are nearly identical to the model. With
-them, one scenario went from 14.8% to 51.1% confidence on the right answer.
+The panel also has a start control, for when you would rather not go through the
+agent.
 
-**Describe what the reply looks like, not just what happened.** "The agent
-produced a plan" fits both before and after the review. "A numbered list of
-changes" is something only the summarised reply has.
-
-**Let the model read position, not make the policy call.** Where you have
-already decided what happens next, say which message came last:
-
-```yaml
-- id: selfcheck_go
-  when: The last plugin message was the third-round question, and the agent has
-        replied to it.
-  do: send
-  prompt: Run another self-check
-```
-
-That works for any reply. Written instead as "the agent says it needs another
-round", the model had to decide a question you had already answered, and got it
-wrong on all three replies tested — "yes", "no", and a bare "ok".
-
-Write them in whatever language you configured the rules in. Chinese and English
-both work.
-
-### The cost of more decision points
-
-Every decision point is an option for the model, and more options make adjacent
-descriptions harder to tell apart. Measured on a twelve-point set: removing a
-single unrelated entry — one that describes a situation nowhere in the
-conversation — flipped a correct answer to its neighbour, because it diluted the
-field.
-
-So when a set stops working, the fix is usually to sharpen the two entries that
-sit next to each other, not to add more of them. A workspace with a dozen
-decision points needs more distinct `when` texts than one with three.
+Pause, resume and cancel are panel controls, not tools. An agent that could park
+its own pipeline could also quietly skip its self-check.
 
 ## Language
 
@@ -230,10 +201,13 @@ more reliably in Chinese. They are model input, not documentation.
 The model returns a probability for each option. Confidence is the probability it
 put on the one it chose — raw `p_max`, nothing rescaling it.
 
-Below `confidenceFloor` (default `0.15`) the plugin does nothing: it logs
-`uncertain` and pauses automatic advancement. A turn where the conversation
-does not clearly match any decision point therefore produces no action, which is
-the intended outcome.
+Below `confidenceFloor` (default `0.15`) the plugin does not guess: it logs
+`uncertain` and holds the flow at the branch. Guessing a direction would send
+the wrong follow-up, and the wrong follow-up is harder to notice than a pause.
+
+A branch is now the only place the floor applies, and a two-way question scores
+far higher than the twelve-way one it replaced — 43% to 60% on the shipped
+configuration against 24% typical before.
 
 **Why not normalize.** An earlier version mapped the random baseline `1/n` to 0
 so a fixed threshold would mean the same thing at any option count. That held up
@@ -310,9 +284,11 @@ When the agent stops because of a network drop or provider timeout, the plugin r
 
 This does not conflict with `dsh-llm-retry`: that is a system-level reconnect, while this plugin only sends after the session has **already stopped**.
 
-## Viewing rules
+## The panel
 
-Right-click a workspace in the left sidebar → **Decision rules…** → every decision point in config order, each with its `when` text.
+A flow in progress shows a standing panel above the composer: one row per step, marked done, in progress or pending, with the flow's name and an `n/m` count. Pause, resume and cancel live there.
+
+The panel is driven by the session projection, not by the current turn, so it stays put when you send a message. That is the one behaviour worth checking after a change: the state it renders comes from the log, so a session reloaded from disk shows the same thing.
 
 Edit `cordis.patch.yml` to change them; restart DSH to apply.
 
