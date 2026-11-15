@@ -262,6 +262,17 @@ distribution, so the floor can be re-calibrated from real sessions.
 
 **Context budget.** The agent's last reply is always kept whole; only earlier turns get truncated to fit. Measured: with the same input, 120 characters of context produced a wrong answer, the full text produced the right one.
 
+The budget is measured by this plugin, not by the host's `tokenMeter`. That
+service prices text at four characters per token and its own README says "CJK
+text and JSON schemas underprice badly" at that rate, that its figures are "a
+reference figure, not a billing record", and that "nothing in the harness makes
+decisions from it". Measured here: 4825 Chinese characters cost 5289 tokens
+while the meter priced them at 1215 — enough of a shortfall that a request the
+plugin believed was 4.8k tokens reached 11.2k and the model rejected it. The
+plugin's own estimate charges each character class at its measured cost and
+deliberately errs high, because over-estimating trims context while
+under-estimating loses the turn.
+
 ## Arbitration: when the plugin stays out of the way
 
 Any one of these silences it:

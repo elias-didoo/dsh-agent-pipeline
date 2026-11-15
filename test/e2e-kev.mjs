@@ -300,6 +300,25 @@ const CASES = [
     expect: "selfcheck_go",
   },
   {
+    // The user asked a question and said so. Nothing should be sent.
+    label: "纯提问·不该发 review",
+    text: "我查了一下，没有这个开关。字幕是渲染时硬编码的，没有用户可关的选项。",
+    opening: "看下 video 页面里有没有让用户关闭字幕效果的开关。我是在问你问题，没让你改代码",
+    expect: "NOT:review",
+  },
+  {
+    // The user typed the review prompt by hand. It is not a plugin message, so
+    // it must not be read as one — that is what fired summarize out of nowhere
+    // in a real session.
+    label: "用户手打 prompt·不该 summarize",
+    text: "我看了一下，可以从构建态源码解决。影响 2 处。",
+    prior: [
+      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "该读的文档和代码都去读。二次确认下是否评估全了，是否会带来其他逻辑的影响？" }], time: Date.now() - 200000 },
+    ],
+    opening: "远端代码有更新，你更新worktree后再看看能否被逆向出来这些字幕的原始来源",
+    expect: "NOT:summarize",
+  },
+  {
     label: "冲突·确认为真→回评审",
     text: "确实有冲突，auth.ts 和 router.ts 两处，我手动合并了。",
     prior: [PLUGIN("conflict")],
@@ -419,9 +438,11 @@ for (const c of CASES) {
   }
   const ms = Date.now() - t0
   const got = r.ruleId ?? r.skipped ?? "-"
-  const hit = got === c.expect
+  const negate = c.expect.startsWith("NOT:")
+  const want = negate ? c.expect.slice(4) : c.expect
+  const hit = negate ? got !== want : got === want
   if (hit) ok++
-  console.log(`  ${hit ? "✅" : "❌"} ${c.label.padEnd(20)} want=${c.expect.padEnd(12)} got=${String(got).padEnd(12)} ${String(r.action ?? "skip").padEnd(7)} ${ms}ms`)
+  console.log(`  ${hit ? "✅" : "❌"} ${c.label.padEnd(20)} want=${c.expect.padEnd(16)} got=${String(got).padEnd(12)} ${String(r.action ?? "skip").padEnd(7)} ${ms}ms`)
 }
 
 console.log(`\n=== ${ok}/${CASES.length} ===`)
