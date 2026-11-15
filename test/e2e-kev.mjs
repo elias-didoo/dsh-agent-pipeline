@@ -25,13 +25,24 @@ const ROOT = new URL("..", import.meta.url).pathname
 
 const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
-/** A message the plugin sent earlier, tagged with the decision point that sent it. */
-const PLUGIN = (ruleId, t) => ({
-  role: "user",
-  source: { kind: "decision", ruleId },
-  content: [{ type: "text", text: t }],
-  time: Date.now() - 30000,
-})
+/**
+ * A message the plugin sent earlier, with the text it actually sends.
+ *
+ * Taken from the fixture rather than written out here: a history built from
+ * paraphrases is not the conversation the plugin produces, and the model
+ * reading it makes different choices. Four of six hand-written versions of
+ * these prompts differed from the real ones before this was fixed.
+ */
+const PLUGIN = (ruleId) => {
+  const d = workspace.decisions.find((x) => x.id === ruleId)
+  if (!d) throw new Error(`PLUGIN(${ruleId}): no such decision point`)
+  return {
+    role: "user",
+    source: { kind: "decision", ruleId },
+    content: [{ type: "text", text: d.prompt }],
+    time: Date.now() - 30000,
+  }
+}
 
 /**
  * Build the workspace config from the fixture, which is the same file the
@@ -172,13 +183,13 @@ const CASES = [
   {
     label: "评审完（没汇总）",
     text: "评审完成，影响 3 处，架构上不需要额外抽象。",
-    prior: [PLUGIN("review", "该读的文档和代码都去读。二次确认下是否评估全了。")],
+    prior: [PLUGIN("review")],
     expect: "summarize",
   },
   {
     label: "汇总完（等开干）",
     text: "1. 改 export.ts 2. 加 csv 依赖 3. 加测试",
-    prior: [PLUGIN("review", "该读的文档和代码都去读。"), PLUGIN("summarize", "汇总列出你计划的改动点，要点列全")],
+    prior: [PLUGIN("review"), PLUGIN("summarize")],
     expect: "confirm",
   },
   {
@@ -193,7 +204,7 @@ const CASES = [
     label: "第一轮自检完",
     text: "发现 2 处越界改动，已修正；还加了一个边界测试。",
     prior: [
-      PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
+      PLUGIN("selfcheck_1"),
     ],
     opening: "开干",
     expect: "selfcheck_2",
@@ -202,8 +213,8 @@ const CASES = [
     label: "第二轮完·仍有问题",
     text: "又发现 1 处问题，边界条件没处理，已修复。",
     prior: [
-      PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
-      PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
     ],
     opening: "开干",
     expect: "selfcheck_3",
@@ -212,8 +223,8 @@ const CASES = [
     label: "第二轮完成·没问题",
     text: "全部检查通过，TS 和 lint 都是 0 error，没发现遗留问题。",
     prior: [
-      PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
-      PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
     ],
     opening: "开干",
     expect: "push",
@@ -222,9 +233,9 @@ const CASES = [
     label: "第三轮答复后",
     text: "还需要，重点应该放在边界条件上。",
     prior: [
-      PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
-      PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
-      PLUGIN("selfcheck_3", "每次自检都能发现新问题，你觉得还需要下次自检吗？"),
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
+      PLUGIN("selfcheck_3"),
     ],
     opening: "开干",
     expect: "selfcheck_go",
@@ -246,9 +257,44 @@ const CASES = [
     label: "第三轮后·说不用也继续",
     text: "我觉得不需要再做自检了，代码已经足够干净。",
     prior: [
-      PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
-      PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
-      PLUGIN("selfcheck_3", "每次自检都能发现新问题，你觉得还需要下次自检吗？"),
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
+      PLUGIN("selfcheck_3"),
+    ],
+    opening: "开干",
+    expect: "selfcheck_go",
+  },
+  {
+    // Every reply after the third round must lead to the same place. The
+    // earlier criteria read the wording and split on it.
+    label: "第三轮后·简短说要",
+    text: "是的，还需要。",
+    prior: [
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
+      PLUGIN("selfcheck_3"),
+    ],
+    opening: "开干",
+    expect: "selfcheck_go",
+  },
+  {
+    label: "第三轮后·简短说不用",
+    text: "不需要了。",
+    prior: [
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
+      PLUGIN("selfcheck_3"),
+    ],
+    opening: "开干",
+    expect: "selfcheck_go",
+  },
+  {
+    label: "第三轮后·说可以了",
+    text: "可以了，没问题。",
+    prior: [
+      PLUGIN("selfcheck_1"),
+      PLUGIN("selfcheck_2"),
+      PLUGIN("selfcheck_3"),
     ],
     opening: "开干",
     expect: "selfcheck_go",
@@ -256,14 +302,14 @@ const CASES = [
   {
     label: "冲突·确认为真→回评审",
     text: "确实有冲突，auth.ts 和 router.ts 两处，我手动合并了。",
-    prior: [PLUGIN("conflict", "刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的")],
+    prior: [PLUGIN("conflict")],
     opening: "同步到最新 head",
     expect: "review",
   },
   {
     label: "冲突·确认没冲突",
     text: "没有冲突，直接 fast-forward 了。",
-    prior: [PLUGIN("conflict", "刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的")],
+    prior: [PLUGIN("conflict")],
     opening: "同步到最新 head",
     expect: "waiting",
   },
