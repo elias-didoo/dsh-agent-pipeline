@@ -24,6 +24,7 @@ const fast = process.argv.includes("--fast")
 const suites = [
   ["contracts.mjs", "DSH runtime contracts (projection/slots/ModuleLoader/v4 sources)"],
   ["client.mjs", "Client rendering (menu, panel, stages, language)"],
+  ["readme.mjs", "README examples stay runnable"],
   ["apply.mjs", "apply() wiring (projection registration and schemas)"],
   ["context.mjs", "Context budget and last-message priority"],
   ["confidence.mjs", "Confidence normalization"],

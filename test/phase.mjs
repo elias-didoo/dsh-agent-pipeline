@@ -331,5 +331,47 @@ await t("the action enum is send/stop/silent only — notify is gone", () => {
   assert(legacy.issues?.some((i) => /action/.test(i.message)), "notify should be rejected")
 })
 
+console.log("\n=== 8. The serial queue ===")
+
+const { SerialQueue } = await import("../lib/judge.js")
+
+const delay = (ms, v) => () => new Promise((r) => setTimeout(() => r(v), ms))
+
+await t("runs tasks one at a time, in submission order", async () => {
+  // The decision model runs with a single slot, so overlapping requests would
+  // interleave its answers. This queue is what prevents that.
+  const q = new SerialQueue()
+  const finished = []
+  const task = (name, ms) => () => new Promise((r) => setTimeout(() => { finished.push(name); r(name) }, ms))
+  await Promise.all([q.run(task("a", 30)), q.run(task("b", 5)), q.run(task("c", 10))])
+  assert(finished.join(",") === "a,b,c", `finished in ${finished.join(",")}`)
+})
+
+await t("returns each task's own result", async () => {
+  const q = new SerialQueue()
+  const results = await Promise.all([q.run(delay(10, "first")), q.run(delay(1, "second"))])
+  assert(results.join(",") === "first,second", `got ${results.join(",")}`)
+})
+
+await t("a throwing task rejects its caller but the queue keeps working", async () => {
+  const q = new SerialQueue()
+  let caught = null
+  try {
+    await q.run(() => { throw new Error("boom") })
+  } catch (e) {
+    caught = e.message
+  }
+  assert(caught === "boom", `the caller should see the error, got ${caught}`)
+  const next = await q.run(delay(1, "ok"))
+  assert(next === "ok", `the queue should still run later tasks, got ${next}`)
+})
+
+await t("a rejecting task does not poison the queue either", async () => {
+  const q = new SerialQueue()
+  await q.run(() => Promise.reject(new Error("nope"))).catch(() => {})
+  const next = await q.run(delay(1, "ok"))
+  assert(next === "ok", `got ${next}`)
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

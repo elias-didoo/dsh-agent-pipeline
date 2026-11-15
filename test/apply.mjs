@@ -129,5 +129,59 @@ await t("the view carries stage definitions, not just rules", () => {
   }
 })
 
+console.log("\n=== apply survives a broken host ===")
+
+const BASE_CFG = {
+  model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 1000, path: "/v1/systemone" },
+  defaults: {
+    maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.3,
+    humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3,
+  },
+  workspaces: [],
+}
+
+function ctxWith(over = {}) {
+  return {
+    agents: { list: () => [] },
+    sessions: { flush: async () => true },
+    goals: { get: () => undefined },
+    sessionProjections: { register: () => ({ stateOf: () => ({}), dispose: async () => {} }) },
+    get: () => undefined,
+    on: () => {},
+    effect: () => {},
+    ...over,
+  }
+}
+
+const BROKEN_HOSTS = [
+  ["a projection registry that throws", () => ctxWith({ sessionProjections: { register: () => { throw new Error("no") } } })],
+  ["a projection registry that rejects", () => ctxWith({ sessionProjections: { register: () => Promise.reject(new Error("no")) } })],
+  ["no projection service at all", () => ctxWith({ sessionProjections: undefined })],
+  ["an event bus that throws", () => ctxWith({ on: () => { throw new Error("no") } })],
+  ["no effect helper", () => ctxWith({ effect: undefined })],
+  ["no settings service", () => ctxWith({ get: () => undefined })],
+  ["a settings service that throws", () => ctxWith({ get: (k) => (k === "settings" ? { describe: () => { throw new Error("no") } } : undefined) })],
+]
+
+for (const [label, mk] of BROKEN_HOSTS) {
+  await t(`apply with ${label} does not throw`, () => {
+    // A fault in the host must disable this plugin at worst. Throwing here
+    // would take down DSH startup or session reads.
+    host.apply(mk(), BASE_CFG)
+  })
+}
+
+await t("apply with a null config does not throw", () => {
+  host.apply(ctxWith(), null)
+})
+
+await t("apply with a non-object config does not throw", () => {
+  host.apply(ctxWith(), "garbage")
+})
+
+await t("apply with garbage workspaces does not throw", () => {
+  host.apply(ctxWith(), { ...BASE_CFG, workspaces: "not an array" })
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail?1:0)
