@@ -17,7 +17,7 @@
 ## 安装
 
 ```bash
-git clone https://github.com/<you>/dsh-decision-orchestrator.git \
+git clone https://github.com/elias-didoo/dsh-decision-orchestrator.git \
   ~/.dsh/plugins/decision-orchestrator
 cd ~/.dsh/plugins/decision-orchestrator
 npm test          # 可选，验证环境

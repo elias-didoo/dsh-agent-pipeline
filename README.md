@@ -33,7 +33,7 @@ A Chinese README is available at [README.zh-CN.md](README.zh-CN.md).
 ## Install
 
 ```bash
-git clone https://github.com/<you>/dsh-decision-orchestrator.git \
+git clone https://github.com/elias-didoo/dsh-decision-orchestrator.git \
   ~/.dsh/plugins/decision-orchestrator
 cd ~/.dsh/plugins/decision-orchestrator
 npm test          # optional, verifies your environment
