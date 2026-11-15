@@ -76,7 +76,7 @@ function makeCtx({ goal, flushOk = true } = {}) {
     sessions: { flush: async () => flushOk },
     goals: { get: () => goal },
     get(key) {
-      if (key === "tokenMeter") return { estimateMessage: (m) => 20 }
+      if (key === "tokenMeter") return { estimateMessage: () => 20 }
       return undefined
     },
   }
@@ -463,6 +463,24 @@ await t("model unreachable and over the limit → stops with stoppedReason + log
   const hit = fresh.filter((e) => e.ev === "stop" && e.why === "judge-failure")
   assert(hit.length > 0, `expected a new ev=stop why=judge-failure line, got ${fresh.map((e) => e.ev).join(",") || "none"}`)
 })
+
+console.log("\n=== 7c. The retry prompt follows the UI language ===")
+
+for (const [locale, needle] of [["zh", "请继续"], ["en", "Please continue"], [undefined, "Please continue"]]) {
+  await t(`retry prompt with locale=${locale ?? "unset"}`, async () => {
+    const agent = makeAgent()
+    const cfg = makeConfig()
+    if (locale !== undefined) cfg.locale = locale
+    else delete cfg.locale
+    const r = await handleTurnEnd({
+      ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
+      turnEnd: turnEnd("error"), config: cfg, state: {}, mutate: () => {}, queue: makeQueue(),
+    })
+    assert(r.action === "retry", `should retry, got ${JSON.stringify(r)}`)
+    const text = agent.sent[0]?.content?.[0]?.text ?? ""
+    assert(text.includes(needle), `prompt should contain "${needle}", got "${text}"`)
+  })
+}
 
 console.log("\n=== 8. flush failure is observable ===")
 await t("flush returns false → reports failure", async () => {

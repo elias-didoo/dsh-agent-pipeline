@@ -181,9 +181,15 @@ await t("a stage with no rules in it → skip, never picks another stage's rule"
   assert(r.skip === "stage-complete", `got ${r.skip}`)
 })
 
-await t("bare stage id (no definition) → skip:unknown-behavior", () => {
+await t("a stage id the config does not define → skip names it", () => {
   const r = pickRule("planning", progressOf([]), RULES)
   assert(!r.rule, "a bare id carries no behavior, so nothing can be chosen")
+  assert(r.skip === "undefined-stage:planning", `got ${r.skip}`)
+})
+
+await t("no stage at all → skip:no-stage", () => {
+  const r = pickRule(undefined, progressOf([]), RULES)
+  assert(r.skip === "no-stage", `got ${r.skip}`)
 })
 
 console.log("\n=== 5. Stage definitions ===")

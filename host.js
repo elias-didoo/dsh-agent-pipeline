@@ -8,6 +8,7 @@
  *   3. Expose read-only queries to the GUI
  */
 
+import { resolveUiLocale } from "./lib/host-locale.js"
 import { Config, validateConfig } from "./lib/config.js"
 import { handleTurnEnd } from "./lib/core.js"
 import { SerialQueue } from "./lib/judge.js"
@@ -149,32 +150,6 @@ function agentForSession(ctx, session) {
     }
   } catch { /* ignore */ }
   return undefined
-}
-
-/**
- * UI language chosen in DSH settings, as `"zh"` or `"en"`.
- *
- * The locale plugin stores its preference in the Host user-settings document
- * under the `locale` namespace, so it is readable from the Host side without
- * any Client round trip. When the user has never picked a language the field is
- * absent and DSH falls back to the browser setting, which is not visible here —
- * English is the safe default in that case.
- *
- * @returns {"zh" | "en"}
- */
-function resolveUiLocale(ctx) {
-  try {
-    // Optional service: a profile without the settings plugin must still load
-    // this one, so it is fetched rather than declared as a hard injection.
-    const settings = ctx?.get?.("settings")
-    if (!settings || typeof settings.describe !== "function") return "en"
-    const described = settings.describe({ redactSecrets: true })
-    const ns = described?.namespaces?.find?.((n) => n?.ns === "locale")
-    const pref = ns?.value?.preference
-    return typeof pref === "string" && pref.toLowerCase().startsWith("zh") ? "zh" : "en"
-  } catch {
-    return "en"
-  }
 }
 
 export function apply(ctx, config) {

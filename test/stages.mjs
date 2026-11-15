@@ -213,5 +213,26 @@ await t("judge falls back to /v1/systemone when no path is configured", async ()
   assert(calls[0]?.endsWith("/v1/systemone"), `got ${calls[0]}`)
 })
 
+console.log("\n=== 8. UI locale resolution ===")
+
+await t("every settings shape falls back to a usable language", async () => {
+  const { resolveUiLocale } = await import("../lib/host-locale.js")
+  const cases = [
+    ["no settings service", () => ({ get: () => undefined }), "en"],
+    ["describe throws", () => ({ get: () => ({ describe: () => { throw new Error("x") } }) }), "en"],
+    ["empty descriptor", () => ({ get: () => ({ describe: () => ({}) }) }), "en"],
+    ["no locale namespace", () => ({ get: () => ({ describe: () => ({ namespaces: [] }) }) }), "en"],
+    ["preference missing", () => ({ get: () => ({ describe: () => ({ namespaces: [{ ns: "locale", value: {} }] }) }) }), "en"],
+    ["preference zh", () => ({ get: () => ({ describe: () => ({ namespaces: [{ ns: "locale", value: { preference: "zh" } }] }) }) }), "zh"],
+    ["preference zh-CN", () => ({ get: () => ({ describe: () => ({ namespaces: [{ ns: "locale", value: { preference: "zh-CN" } }] }) }) }), "zh"],
+    ["preference en", () => ({ get: () => ({ describe: () => ({ namespaces: [{ ns: "locale", value: { preference: "en" } }] }) }) }), "en"],
+    ["preference ZH", () => ({ get: () => ({ describe: () => ({ namespaces: [{ ns: "locale", value: { preference: "ZH" } }] }) }) }), "zh"],
+    ["preference is a number", () => ({ get: () => ({ describe: () => ({ namespaces: [{ ns: "locale", value: { preference: 42 } }] }) }) }), "en"],
+  ]
+  for (const [label, mk, want] of cases) {
+    assert(resolveUiLocale(mk()) === want, `${label}: expected ${want}`)
+  }
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
