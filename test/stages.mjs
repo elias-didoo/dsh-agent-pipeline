@@ -20,7 +20,7 @@ const t = async (name, fn) => {
 }
 const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
-const { BUILTIN_STAGES, BEHAVIORS, isValidStage, hasTerminalStage, indexStages, labelOf } = await import("../lib/stages.js")
+const { BUILTIN_STAGES, BEHAVIORS, isValidStage, hasTerminalStage, stageById, stageLabel } = await import("../lib/stages.js")
 const { pickRule, phaseProgress } = await import("../lib/phases.js")
 const { validate } = await import("../lib/config.js")
 
@@ -51,7 +51,7 @@ const CUSTOM_RULES = [
   { id: "confirm", when: "intake", action: "stop" },
   { id: "done", when: "handover", action: "stop" },
 ]
-const S = indexStages(CUSTOM)
+const S = { get: (id) => stageById(CUSTOM, id) }
 const sent = (id) => ({ role: "user", source: { kind: "decision", ruleId: id }, content: [] })
 const progressOf = (ids) => phaseProgress(ids.map(sent), CUSTOM_RULES)
 
@@ -119,11 +119,14 @@ await t("a list with no terminal stage is rejected", () => {
   assert(r.issues?.some((i) => /terminal/.test(i.message)), "should demand a terminal stage")
 })
 
-await t("a rejected list falls back to the built-ins rather than loading nothing", () => {
+await t("an unusable stage list leaves no value, so the built-ins remain in force", () => {
+  // validate() returns { issues } and no value when the stage list cannot drive
+  // the pipeline, so the caller keeps using the built-ins rather than replacing
+  // them with something that would never settle.
   const r = validate(base([]))
-  // validate() reports issues and returns no value; the caller keeps the
-  // built-ins. This asserts the built-in constant itself is usable.
-  assert(hasTerminalStage(BUILTIN_STAGES), "built-ins must remain a valid fallback")
+  assert(r.issues && r.issues.length > 0, "should report issues")
+  assert(r.value === undefined, "must not hand back a half-usable config")
+  assert(hasTerminalStage(BUILTIN_STAGES), "built-ins must themselves be a valid fallback")
 })
 
 console.log("\n=== 5. Helper behaviour ===")
@@ -144,11 +147,11 @@ await t("hasTerminalStage is false for lists without one", () => {
   assert(!hasTerminalStage(undefined), "undefined has no terminal")
 })
 
-await t("labelOf falls back to English, then to the id", () => {
+await t("stageLabel falls back to English, then to the id", () => {
   const s = { id: "x", label: { en: "English", zh: "中文" } }
-  assert(labelOf(s, "zh") === "中文", "zh label")
-  assert(labelOf(s, "fr") === "English", "unknown locale falls back to English")
-  assert(labelOf({ id: "y", label: {} }, "zh") === "y", "missing labels fall back to the id")
+  assert(stageLabel(s, "zh") === "中文", "zh label")
+  assert(stageLabel(s, "fr") === "English", "unknown locale falls back to English")
+  assert(stageLabel({ id: "y", label: {} }, "zh") === "y", "missing labels fall back to the id")
 })
 
 console.log("\n=== 6. The built-in stages stay a sane default ===")

@@ -131,11 +131,6 @@ function viewOf(state) {
   }
 }
 
-/** Resolve an agent back to its session. */
-function sessionOf(agent) {
-  return agent?.session ?? undefined
-}
-
 /** Find the session behind each live agent. */
 function agentForSession(ctx, session) {
   try {
@@ -183,8 +178,6 @@ function resolveUiLocale(ctx) {
 }
 
 export function apply(ctx, config) {
-  // `config` is reassigned below to fold in the resolved UI locale.
-  // eslint-disable-next-line no-param-reassign
   const queue = new SerialQueue()
   const inflight = new Set()
 

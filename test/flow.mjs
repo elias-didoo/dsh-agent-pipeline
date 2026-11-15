@@ -269,17 +269,17 @@ await t("paused and the user has not spoken → stays quiet", async () => {
   assert(r.skipped === "awaiting-user", `actual: ${JSON.stringify(r)}`)
 })
 
-await t("uncertain also enters the paused state", async () => {
+await t("an already-paused session stays paused", async () => {
   const agent = makeAgent()
   let mutated = null
-  // Low confidence triggers UNCERTAIN. Pointing the model at a dead port would
-  // take the error path instead, so assert on the awaiting state directly.
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: makeConfig(),
     state: { awaitingRuleId: "uncertain" }, mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.skipped === "awaiting-user", `actual: ${JSON.stringify(r)}`)
+  // A held-back turn must not rewrite state, or it would churn the projection.
+  assert(mutated === null, `state should not change on a skipped turn, got ${JSON.stringify(mutated)}`)
 })
 
 await t("paused but the user has spoken → unpause and continue", async () => {
@@ -403,6 +403,7 @@ await t("over the limit → stop", async () => {
     state: { failures: 3 }, mutate: (n) => { mutated = n }, queue: makeQueue(),
   })
   assert(r.action === "stopped", `actual: ${JSON.stringify(r)}`)
+  assert(String(mutated?.stoppedReason).startsWith("failure-limit"), `should record failure-limit, got ${mutated?.stoppedReason}`)
 })
 
 console.log("\n=== 5b. iterations accumulate per session ===")

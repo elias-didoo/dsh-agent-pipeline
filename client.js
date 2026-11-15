@@ -136,7 +136,14 @@ window.__ModuleLoader__.load({
 .do-hint code{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));padding:1px 5px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 `
 
-    /** Stage label for the active language, falling back to the raw id. */
+    /**
+     * Stage label for the active language, falling back to the raw id.
+     *
+     * Mirrors `stageLabel` in lib/stages.js. It cannot import it: this file is
+     * a browser artifact loaded through the module loader, while lib/ is the
+     * Host half. Keep the two in step — the Host sends `label` as `{ en, zh }`
+     * and this is the only place that picks one.
+     */
     function stageLabel(stage, locale) {
       return stage?.label?.[locale] ?? stage?.label?.en ?? stage?.id ?? ""
     }
@@ -263,29 +270,43 @@ window.__ModuleLoader__.load({
     let setInfo = null
 
     /** Component handed to the slot, closed over the resolved language. */
-    function makePanelHost(t, locale) {
+    function makePanelHost(t, activeLocale) {
       return function PanelHost() {
         const [info, setState] = useState(null)
         setInfo = setState
         if (info === null) return null
-        return h(RulesPanel, { info, onClose: () => setState(null), t, locale })
+        return h(RulesPanel, { info, onClose: () => setState(null), t, locale: activeLocale() })
       }
     }
 
     function applyClient(ctx) {
       // ── Panel strings follow the DSH language setting ──
-      // Fetched rather than injected: a host without the locale service still
-      // renders the panel, just with the fallback dictionary below.
-      let locale = "en"
+      // The service is fetched rather than injected: a host without it still
+      // renders the panel, using the English dictionary below.
+      //
+      // The active language is read on every call, never captured once, so a
+      // language switch takes effect the next time the panel renders instead of
+      // leaving stale text until a reload.
       let localeSvc
       try {
         localeSvc = ctx.get?.("locale")
         for (const [id, dict] of Object.entries(DICT)) localeSvc?.register?.(NS, id, dict)
-        locale = localeSvc?.getLocale?.()?.active ?? "en"
       } catch { /* keep defaults */ }
 
-      const activeDict = DICT[locale] ?? DICT[locale?.startsWith?.("zh") ? "zh" : "en"] ?? DICT.en
-      const t = (key) => activeDict[key] ?? DICT.en[key] ?? key
+      const activeLocale = () => {
+        try {
+          const active = localeSvc?.getLocale?.()?.active
+          if (typeof active === "string" && active.length > 0) {
+            return DICT[active] ? active : (active.startsWith("zh") ? "zh" : "en")
+          }
+        } catch { /* fall through */ }
+        return "en"
+      }
+
+      const t = (key) => {
+        const dict = DICT[activeLocale()] ?? DICT.en
+        return dict[key] ?? DICT.en[key] ?? key
+      }
 
       // Inject styles
       try {
@@ -337,7 +358,7 @@ window.__ModuleLoader__.load({
             id: "decision-orchestrator.rules",
             inject: () => ({}),
           },
-          makePanelHost(t, locale),
+          makePanelHost(t, activeLocale),
         )
       })
     }

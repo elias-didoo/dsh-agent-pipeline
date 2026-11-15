@@ -21,10 +21,10 @@ const t = async (name, fn) => {
 const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
 const { pickRule, phaseProgress } = await import("../lib/phases.js")
-const { BUILTIN_STAGES, BEHAVIORS, isValidStage, hasTerminalStage, indexStages } = await import("../lib/stages.js")
+const { BUILTIN_STAGES, BEHAVIORS, isValidStage, hasTerminalStage, stageById } = await import("../lib/stages.js")
 const { validate, STAGES } = await import("../lib/config.js")
 
-const S = indexStages(BUILTIN_STAGES)
+const S = { get: (id) => stageById(BUILTIN_STAGES, id) }
 
 /** Build one plugin-sent message. */
 function sent(ruleId) {
