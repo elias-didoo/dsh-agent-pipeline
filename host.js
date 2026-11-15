@@ -10,6 +10,7 @@
 
 import { resolveUiLocale } from "./lib/host-locale.js"
 import { Config, validateConfig } from "./lib/config.js"
+import { BUILTIN_STAGES } from "./lib/stages.js"
 import { handleTurnEnd } from "./lib/core.js"
 import { SerialQueue } from "./lib/judge.js"
 import { log } from "./lib/log.js"
@@ -48,7 +49,10 @@ function initialState(header, config) {
   // Stage definitions the client renders its group headings from. Read once at
   // init: they come from the same config the rules do.
   try {
-    stagesView = (config?.stages ?? []).map((st) => ({
+    // Same fallback effectiveConfig uses: an absent `stages` means the
+    // built-ins, not "no stages". Without this the panel would receive an empty
+    // list and show every rule under "unrecognized stage".
+    stagesView = (config?.stages ?? BUILTIN_STAGES).map((st) => ({
       id: st.id,
       behavior: st.behavior,
       label: { en: st.label?.en ?? st.id, zh: st.label?.zh ?? st.id },
@@ -100,13 +104,20 @@ const stateSchema = {
   },
 }
 
-/** View schema: whatever `wire.view` returns must survive this layer. */
+/**
+ * View schema: whatever `wire.view` returns must survive this layer.
+ *
+ * Every field `viewOf` produces has to be listed here. A field missing from
+ * this parse is dropped silently — the client then renders against an empty
+ * value with nothing indicating why.
+ */
 const viewSchema = {
   parse(value) {
     const v = value && typeof value === "object" ? value : {}
     return {
       enabled: v.enabled === true,
       rules: Array.isArray(v.rules) ? v.rules : [],
+      stages: Array.isArray(v.stages) ? v.stages : [],
     }
   },
 }

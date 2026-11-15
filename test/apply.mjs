@@ -87,5 +87,47 @@ t("view excludes runtime-only fields", () => {
   assert(!("stopped" in v), "view must not expose stopped (always stale)")
 })
 
+console.log("\n=== schemas do not drop fields ===")
+
+await t("stateSchema preserves every field initialState produces", () => {
+  // A hand-written parse that forgets a field drops it silently: nothing throws,
+  // the value just quietly becomes empty downstream.
+  const initial = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
+  const parsed = registered.stateSchema.parse(initial)
+  for (const key of Object.keys(initial)) {
+    assert(key in parsed, `stateSchema drops ${key}`)
+    assert(
+      JSON.stringify(parsed[key]) === JSON.stringify(initial[key]),
+      `stateSchema alters ${key}`,
+    )
+  }
+})
+
+await t("viewSchema preserves every field viewOf produces", () => {
+  const initial = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
+  const view = registered.wire.view(initial)
+  const parsed = registered.wire.viewSchema.parse(view)
+  for (const key of Object.keys(view)) {
+    assert(key in parsed, `viewSchema drops ${key}`)
+    assert(
+      JSON.stringify(parsed[key]) === JSON.stringify(view[key]),
+      `viewSchema alters ${key}`,
+    )
+  }
+})
+
+await t("the view carries stage definitions, not just rules", () => {
+  // Without stages the client cannot group rules by stage at all.
+  const initial = registered.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
+  const view = registered.wire.viewSchema.parse(registered.wire.view(initial))
+  assert(Array.isArray(view.stages), "view.stages must be an array")
+  assert(view.stages.length > 0, "view.stages must not be empty for an enabled workspace")
+  for (const st of view.stages) {
+    assert(typeof st.id === "string" && st.id.length > 0, "each stage needs an id")
+    assert(st.label && st.label.en && st.label.zh, `stage ${st.id} needs both labels`)
+    assert(typeof st.behavior === "string", `stage ${st.id} needs a behavior`)
+  }
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail?1:0)
