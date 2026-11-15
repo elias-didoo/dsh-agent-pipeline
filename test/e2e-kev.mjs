@@ -16,9 +16,14 @@
 process.env.DECISION_ORCHESTRATOR_LOG_DIR ??=
   new URL(`file://${(await import("node:os")).tmpdir()}/decision-orchestrator-test-logs`).pathname
 
+const { readFileSync } = await import("node:fs")
+const { join } = await import("node:path")
+
 const { handleTurnEnd } = await import("../lib/core.js")
 
-const WS = "/tmp/dsh-decision-orchestrator-test-workspace"
+const ROOT = new URL("..", import.meta.url).pathname
+
+const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 
 /** A message the plugin sent earlier, tagged with the decision point that sent it. */
 const PLUGIN = (ruleId, t) => ({
@@ -28,46 +33,62 @@ const PLUGIN = (ruleId, t) => ({
   time: Date.now() - 30000,
 })
 
+/**
+ * Build the workspace config from the fixture, which is the same file the
+ * deployed profile carries.
+ *
+ * Parsed by hand rather than with a YAML library: the project has no
+ * dependencies, and this file's shape is fixed — a decisions list of scalar
+ * fields. A parser bug would show up as a missing decision point, which the
+ * assertion on the count catches.
+ */
+function loadFixture() {
+  const text = readFileSync(join(ROOT, "fixtures/brandu.yml"), "utf8")
+  const decisions = []
+  for (const chunk of text.split(/^\s*- id:\s*/m).slice(1)) {
+    const id = chunk.split("\n")[0].trim()
+    const field = (name) => {
+      const m = new RegExp(`^\\s*${name}:\\s*(.+?)\\s*$`, "m").exec(chunk)
+      return m ? m[1] : ""
+    }
+    const doWhat = field("do")
+    decisions.push({ id, when: field("when"), do: doWhat, prompt: field("prompt"), notifyText: field("notifyText") })
+  }
+  assert(decisions.length > 0, "fixture produced no decision points")
+  const pathMatch = /^\s*- path:\s*(.+)$/m.exec(text)
+  return {
+    path: pathMatch ? pathMatch[1].trim() : "",
+    enabled: /^\s*enabled:\s*true$/m.test(text),
+    decisions,
+  }
+}
+
+const workspace = loadFixture()
+const WS = workspace.path
 const config = {
   model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
   defaults: {
     maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.15,
     humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3,
   },
-  workspaces: [{
-    path: WS,
-    enabled: true,
-    decisions: [
-      // Every `when` names a message the plugin itself sent, by its opening
-      // words. That is what lets the model tell two adjacent situations apart:
-      // "the agent produced a plan" is ambiguous, "and the review request has
-      // not appeared yet" is not.
-      { id: "bug_root", when: "用户在报 bug。对话里还没有出现「以上是你的猜测还是已经有证据证明的根因」这条插件消息。", do: "send", prompt: "以上是你的猜测还是已经有证据证明的根因？", notifyText: "" },
-      { id: "review", when: "agent 第一次给出技术方案或评估结论。对话里还没有出现「该读的文档和代码都去读」这条插件消息。", do: "send", prompt: "该读的文档和代码都去读。", notifyText: "" },
-      { id: "summarize", when: "对话里已经出现「该读的文档和代码都去读」，但 agent 的回复是一段评审结论而不是编号清单。还没有出现「汇总列出你计划的改动点」。", do: "send", prompt: "汇总列出你计划的改动点，要点列全", notifyText: "" },
-      { id: "confirm", when: "对话里已经出现「汇总列出你计划的改动点」这条插件消息，agent 的回复是一条编号的改动清单。这是方案阶段的最后一步，等用户说开干。", do: "stop", prompt: "", notifyText: "方案已就绪，等你决定" },
-      { id: "selfcheck_1", when: "用户说过开干，agent 已完成代码改动。还没有出现「仔细检查你刚改动的所有文件」。", do: "send", prompt: "仔细检查你刚改动的所有文件。", notifyText: "" },
-      { id: "selfcheck_2", when: "对话里已经出现「仔细检查你刚改动的所有文件」，agent 刚回复检查结果。还没有出现「该修的问题都修」。", do: "send", prompt: "该修的问题都修了吗？有问题就去修", notifyText: "" },
-      { id: "selfcheck_3", when: "对话里已经出现「该修的问题都修」，但还没有出现「每次自检都能发现新问题」。agent 回复说又发现新问题。", do: "send", prompt: "每次自检都能发现新问题，你觉得还需要下次自检吗？", notifyText: "" },
-      { id: "selfcheck_go", when: "对话里已经出现「每次自检都能发现新问题」，agent 已经答复了那条问题，现在应该让它开始下一轮自检。", do: "send", prompt: "开始自检", notifyText: "" },
-      { id: "push", when: "自检已经全部通过，agent 还没有推送。", do: "send", prompt: "推送", notifyText: "" },
-      { id: "conflict", when: "rebase 或 merge 最新 head 时发生冲突，或 agent 正在说明如何解决冲突。", do: "send", prompt: "刚才 rebase/merge 最新 head 时是否有冲突，你是怎么解决的", notifyText: "" },
-      { id: "waiting", when: "agent 在正文里直接向用户提问、请求批准或索要信息。", do: "stop", prompt: "", notifyText: "需要你拍板" },
-      { id: "finished", when: "agent 已经把代码推到远端（回复里有 HEAD -> main 或 push 成功），或明确宣告整个需求结束。", do: "stop", prompt: "", notifyText: "需求已完成" },
-    ],
-  }],
+  workspaces: [workspace],
 }
 
-function mkSession(text, prior = []) {
+/**
+ * One conversation: the user's opening message, whatever the plugin and agent
+ * exchanged, then the reply being judged.
+ *
+ * Chronological, and the opening message is the caller's — a conflict scenario
+ * does not start with a feature request, and padding it with one leaves the
+ * model reading two unrelated threads.
+ */
+function mkSession(text, prior = [], opening = "先把 worktree 同步到最新 head，然后评估需求：加一个导出功能") {
   const now = Date.now()
   return {
     id: "session-e2e-0001",
     header: { cwd: WS },
-    // Chronological: the opening request, then whatever the plugin and agent
-    // exchanged, then the reply being judged. An out-of-order log reads to the
-    // model as a different conversation entirely.
     deriveMessages: () => [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "先把 worktree 同步到最新 head，然后评估需求：加一个导出功能" }], time: now - 600000 },
+      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: opening }], time: now - 600000 },
       ...prior,
       { role: "assistant", source: { kind: "model" }, content: [{ type: "text", text }], time: now - 5000 },
     ],
@@ -170,16 +191,77 @@ const CASES = [
     expect: "waiting",
   },
   {
+    label: "冲突·确认为真→回评审",
+    text: "确实有冲突，auth.ts 和 router.ts 两处，我手动合并了。",
+    prior: [PLUGIN("conflict", "刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的")],
+    opening: "同步到最新 head",
+    expect: "review",
+  },
+  {
+    label: "冲突·确认没冲突",
+    text: "没有冲突，直接 fast-forward 了。",
+    prior: [PLUGIN("conflict", "刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的")],
+    opening: "同步到最新 head",
+    expect: "waiting",
+  },
+  {
     label: "有冲突",
     text: "rebase 时 auth.ts 和 router.ts 有冲突，已手动合并两处。",
+    opening: "同步到最新 head",
     expect: "conflict",
   },
 ]
 
+// The fixture is only authoritative if the running profile agrees with it. When
+// one is edited without the other, every assertion below passes against a
+// configuration nobody deploys — which is exactly the drift this arrangement
+// exists to prevent.
+function checkProfileMatches() {
+  const home = process.env.HOME
+  if (!home) return "HOME is unset; skipped"
+  const profilePath = join(home, ".dsh/profiles/desktop/cordis.patch.yml")
+  let profile
+  try {
+    profile = readFileSync(profilePath, "utf8")
+  } catch {
+    return "no deployed profile on this machine; skipped"
+  }
+  const start = profile.indexOf("        workspaces:")
+  assert(start > 0, "the deployed profile has no workspaces block")
+  const end = profile.indexOf("\n\n- id:", start)
+  const deployed = profile.slice(start, end > 0 ? end : undefined)
+
+  const ids = (text) => text.split(/^\s*- id:\s*/m).slice(1).map((c) => c.split("\n")[0].trim())
+  const deployedIds = ids(deployed)
+  const fixtureIds = workspace.decisions.map((d) => d.id)
+  assert(
+    deployedIds.join(",") === fixtureIds.join(","),
+    `decision points differ\n  deployed: ${deployedIds.join(",")}\n  fixture:  ${fixtureIds.join(",")}`,
+  )
+
+  // Every `when` must match too: the ids matching while the prose drifts would
+  // leave the model reading texts that were never tested.
+  for (const d of workspace.decisions) {
+    const m = new RegExp(`- id: ${d.id}\\s*\\n\\s*when: (.+?)\\s*$`, "m").exec(deployed)
+    assert(m, `decision ${d.id} is missing from the profile`)
+    assert(m[1].trim() === d.when, `decision ${d.id} when differs\n  deployed: ${m[1].trim()}\n  fixture:  ${d.when}`)
+  }
+  return `matches ${deployedIds.length} decision points`
+}
+
+console.log("=== 部署配置与 fixture 一致 ===")
+try {
+  console.log("  " + checkProfileMatches())
+} catch (e) {
+  console.log("  ❌ " + e.message)
+  process.exit(1)
+}
+console.log()
+
 let ok = 0
 console.log("=== 真实 Kev：12 条决策点端到端 ===")
 for (const c of CASES) {
-  const session = mkSession(c.text, c.prior ?? [])
+  const session = mkSession(c.text, c.prior ?? [], c.opening)
   const agent = mkAgent(session)
   const t0 = Date.now()
   let r

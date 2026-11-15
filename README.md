@@ -109,6 +109,10 @@ Edit this plugin's `config` inside `~/.dsh/profiles/desktop/cordis.patch.yml`:
             notifyText: Work is done.
 ```
 
+`fixtures/brandu.yml` holds the full working set this plugin was built against
+— twelve decision points covering a review loop, three self-check rounds and
+conflict handling. The example above is trimmed to keep this section readable.
+
 ## Anatomy of a decision point
 
 A decision point is one thing the plugin may do next. The model reads the

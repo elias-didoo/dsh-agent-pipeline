@@ -208,11 +208,13 @@ await t("a disabled workspace may define none", () => {
   assert(!r.issues, JSON.stringify(r.issues?.[0]))
 })
 
-await t("the old `rules` field is no longer accepted", () => {
-  // Not a compatibility claim — this just confirms the rename landed, so a
-  // stale config fails loudly instead of being silently ignored.
+await t("a config still using `rules` fails loudly", () => {
+  // Parsing succeeds either way, so without an explicit check a stale config
+  // would load with zero decision points and the plugin would do nothing while
+  // looking enabled.
   const r = validate({ workspaces: [{ path: WS, enabled: true, rules: [{ id: "a", when: "x", scene: "s", action: "send", prompt: "p" }] }] })
-  assert(r.value.workspaces[0].decisions.length === 0, "rules must not populate decisions")
+  assert(r.issues?.some((i) => /rules/.test(i.message)), "should name the stale field")
+  assert(r.value === undefined, "must not hand back a config that does nothing")
 })
 
 await t("effectiveConfig exposes decisions, not rules", () => {
