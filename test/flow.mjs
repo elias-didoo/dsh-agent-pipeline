@@ -24,7 +24,7 @@ const assert = (cond, msg) => { if (!cond) throw new Error(msg) }
 process.env.DECISION_ORCHESTRATOR_LOG_DIR ??=
   new URL(`file://${(await import("node:os")).tmpdir()}/decision-orchestrator-test-logs`).pathname
 
-const { handleTurnEnd } = await import("../lib/core.js")
+const { handleTurnEnd, waitSatisfied } = await import("../lib/core.js")
 
 // ── Test fixtures ──
 const WS = "/tmp/dsh-decision-orchestrator-test-workspace"
@@ -46,10 +46,13 @@ function makeConfig(overrides = {}) {
         needs_user_input: { id: "needs_user_input", do: "stop", notifyText: "需要你拍板" },
         finished: { id: "finished", do: "stop", notifyText: "已完成" },
       },
-      flows: {
-        demo: { label: { en: "Demo", zh: "演示" }, steps: ["selfcheck_1", "selfcheck_2", "needs_user_input"] },
-        done: { label: { en: "Done", zh: "完成" }, steps: ["finished"] },
-      },
+      // flows is a list in the config format. A map here would fail the real
+      // validator, effectiveConfig would return null, and every test below
+      // would pass by taking the "not enabled" path instead of the one it names.
+      flows: [
+        { name: "demo", label: { en: "Demo", zh: "演示" }, steps: ["selfcheck_1", "selfcheck_2", "needs_user_input"] },
+        { name: "done", label: { en: "Done", zh: "完成" }, steps: ["finished"] },
+      ],
     }],
   }
 }
@@ -392,6 +395,84 @@ await t("walking the flow sends each step once and then lands on the stop", asyn
   assert(sentIds.join(",") === "selfcheck_1,selfcheck_2", `expected the two sends in order, got ${sentIds.join(",")}`)
 })
 
+console.log("\n=== 5c2. A stop pauses once, and the cursor does not run past it ===")
+
+await t("the turn that reaches a stop does not also run the next step", async () => {
+  // Advancing on the same turn that records the stop makes the loop arrive at
+  // the next step immediately and halt there too — a second pause the user has
+  // not answered. The demo flow ends on its stop, so this uses a flow that
+  // carries on afterwards.
+  const agent = makeAgent()
+  const cfg = makeConfig({ humanCooldownMs: 0, quietWindowMs: 0 })
+  // flows is a list in the config format, not a map.
+  cfg.workspaces[0].steps.after = { id: "after", do: "send", prompt: "after the stop" }
+  cfg.workspaces[0].flows.push({
+    name: "mid",
+    label: { en: "Mid" },
+    steps: ["selfcheck_1", "needs_user_input", "after"],
+  })
+  let state = startedState({
+    flow: { name: "mid", status: "active", startedAt: Date.now() - 100000, since: 0, branches: {}, passed: [], note: "" },
+  })
+  // A send step counts as passed when its message is in the transcript, not
+  // when it is listed in `passed` — that is only for silent steps.
+  const messages = [
+    ...baseMessages(),
+    { role: "user", source: { kind: "decision", ruleId: "selfcheck_1" }, content: [{ type: "text", text: "x" }], time: Date.now() - 50000 },
+  ]
+  const r = await handleTurnEnd({
+    ctx: makeCtx(), agent, session: makeSession({ messages }),
+    turnEnd: turnEnd(), config: cfg, state,
+    mutate: (n) => { state = n }, queue: makeQueue(),
+  })
+  agent.sent.length = 0
+  assert(r.action === "halt", `expected a halt at the stop, got ${JSON.stringify(r)}`)
+  assert(r.ruleId === "needs_user_input", `expected the stop step, got ${r.ruleId}`)
+
+  // The turn after the stop, before the user replies: still quiet.
+  const second = await handleTurnEnd({
+    ctx: makeCtx(), agent, session: makeSession({ messages }),
+    turnEnd: turnEnd(), config: cfg, state,
+    mutate: (n) => { state = n }, queue: makeQueue(),
+  })
+  assert(second.skipped === "awaiting-user", `should still be waiting, got ${JSON.stringify(second)}`)
+  assert(agent.sent.length === 0, `nothing should have been sent, got ${agent.sent.length}`)
+})
+
+console.log("\n=== 5d. A wait is answered only by a newer message ===")
+
+await t("a phrase from before the flow reached the step does not satisfy it", () => {
+  // Without this, a "go" the user typed for an earlier task satisfies every
+  // later wait, and the flow skips the step it was trying to hold.
+  const now = Date.now()
+  const msgs = [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: now - 3600000 }]
+  const satisfied = waitSatisfied({ expect: "开干", since: now - 1000 }, msgs)
+  assert(satisfied === false, "an hour-old phrase must not answer a wait that began a second ago")
+})
+
+await t("a phrase from after the flow reached the step satisfies it", () => {
+  const now = Date.now()
+  const msgs = [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干。按 agents.md" }], time: now }]
+  const satisfied = waitSatisfied({ expect: "开干", since: now - 1000 }, msgs)
+  assert(satisfied === true, "a fresh phrase should satisfy the wait")
+})
+
+await t("the newest human message decides, not an older one", () => {
+  // Two messages in the same millisecond are ordered by the log; the later one
+  // is the reply.
+  const now = Date.now()
+  const msgs = [
+    { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: now },
+    { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "等等，先说清楚" }], time: now },
+  ]
+  assert(waitSatisfied({ expect: "开干", since: now - 1000 }, msgs) === false,
+    "the later message is the reply, and it is not the phrase")
+})
+
+await t("an empty expect accepts any message the user sent", () => {
+  assert(waitSatisfied({ expect: "" }, []) === true, "no expectation means nothing to check")
+})
+
 console.log("\n=== 6. Empty input ===")
 await t("a send needs no transcript, so an empty one still advances", async () => {
   // Only a branch reads the conversation. A send is a fixed message; refusing
@@ -414,7 +495,7 @@ await t("empty input at a branch → empty-input", async () => {
   state.flow.passed = ["selfcheck_1", "selfcheck_2", "needs_user_input"]
   const cfg = makeConfig()
   cfg.workspaces[0].steps.branchy = { do: "branch", question: "q", options: { a: "finished", b: "selfcheck_1" } }
-  cfg.workspaces[0].flows.branchy = { label: { en: "B" }, steps: ["branchy", "finished"] }
+  cfg.workspaces[0].flows.push({ name: "branchy", label: { en: "B" }, steps: ["branchy", "finished"] })
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: [] }),
     turnEnd: turnEnd(), config: cfg,
@@ -492,7 +573,7 @@ await t("model unreachable and over the limit → stops with stoppedReason + log
   // Only a branch calls the model now, so the flow is parked on one. A send
   // never reaches the model and therefore can never fail this way.
   cfg.workspaces[0].steps.ask = { do: "branch", question: "q", options: { a: "finished", b: "finished" } }
-  cfg.workspaces[0].flows.ask = { label: { en: "Ask" }, steps: ["ask", "finished"] }
+  cfg.workspaces[0].flows.push({ name: "ask", label: { en: "Ask" }, steps: ["ask", "finished"] })
   const r = await handleTurnEnd({
     ctx: makeCtx(), agent, session: makeSession({ messages: baseMessages() }),
     turnEnd: turnEnd(), config: cfg,

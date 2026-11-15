@@ -9,7 +9,7 @@
  */
 
 import { resolveUiLocale } from "./lib/host-locale.js"
-import { Config, validateConfig } from "./lib/config.js"
+import { Config, validate, validateConfig } from "./lib/config.js"
 import { handleTurnEnd, beginFlow, controlFlow } from "./lib/core.js"
 import { registerFlowTools } from "./lib/flow-tools.js"
 import { effectiveConfig } from "./lib/config.js"
@@ -152,10 +152,26 @@ export function apply(ctx, config) {
   config = { ...(config && typeof config === "object" ? config : {}), locale: effectiveLocale }
   log({ ev: "locale", resolved: effectiveLocale })
 
-  // Config validation (never blocks startup, logs only)
+  // Validate and adopt the normalized config.
+  //
+  // The patch layer writes `flows` as a list because it reads better; the
+  // runtime indexes flows by name, and `validate` is what turns one into the
+  // other. Keeping the raw value would make every flow lookup miss and the
+  // pipeline never start — validation that only logs is validation that does
+  // not happen.
+  //
+  // A config that fails validation is not adopted: the errors are logged and
+  // the previous shape stands, so a broken edit leaves the feature off rather
+  // than half-configured.
+  let configValid = false
   try {
-    const errors = validateConfig(config)
-    if (errors.length) log({ ev: "config-invalid", errors })
+    const result = validate(config)
+    if (result.issues) {
+      log({ ev: "config-invalid", errors: result.issues.map((i) => i.message) })
+    } else {
+      config = { ...result.value, locale: effectiveLocale }
+      configValid = true
+    }
   } catch (e) {
     log({ ev: "config-validate-fail", err: String(e?.message ?? e) })
   }
@@ -275,9 +291,14 @@ export function apply(ctx, config) {
   // ── Flow tools ──
   // One workspace means one `start_flow`; with several, the tool unions their
   // flow names and resolves the workspace from the session it is called in.
-  const allFlowNames = [...new Set(workspacesOf(config)
-    .filter((w) => w.enabled === true)
-    .flatMap((w) => Object.keys(w.flows ?? {})))]
+  // Only a validated config has a shape `flows` can be read from: the raw one
+  // carries a list, whose keys are indices. Without this guard an invalid
+  // config registers a tool offering a flow called "0".
+  const allFlowNames = configValid
+    ? [...new Set(workspacesOf(config)
+      .filter((w) => w.enabled === true)
+      .flatMap((w) => Object.keys(w.flows ?? {})))]
+    : []
   const labelFor = (name) => {
     for (const ws of workspacesOf(config)) {
       const f = ws?.flows?.[name]
@@ -313,7 +334,7 @@ export function apply(ctx, config) {
   let disposeCommands = () => {}
   try {
     const commands = ctx.get?.("commands")
-    if (commands && typeof commands.register === "function") {
+    if (configValid && commands && typeof commands.register === "function") {
       disposeCommands = commands.register({
         name: "flow",
         description: "Control the running review flow: pause, resume or cancel.",

@@ -14,7 +14,10 @@ const config = {
       plan: { id: "plan", do: "send", prompt: "p1" },
       wait: { id: "wait", do: "stop", notifyText: "等你" },
     },
-    flows: { demo: { label: { en: "Demo", zh: "演示" }, steps: ["plan", "wait"] } },
+    // A list, like the patch layer writes and like the profile carries. A map
+    // here would fail validation and every test would exercise the
+    // feature-off path instead of the one it names.
+    flows: [{ name: "demo", label: { en: "Demo", zh: "演示" }, steps: ["plan", "wait"] }],
   }],
 }
 
@@ -97,6 +100,9 @@ const assert=(c,m)=>{if(!c)throw new Error(m)}
 console.log("=== apply() simulation ===")
 let apis
 await t("apply does not throw", () => { apis = host.apply(ctx, config) })
+/** What that one apply() registered, before any later test adds to the arrays. */
+const FIRST_APPLY_TOOLS = registeredTools.length
+const FIRST_APPLY_COMMANDS = registeredCommands.length
 /** The read-only surface apply returns; used by the workspace tests below. */
 const hostApis = () => apis
 await t("projection registered", () => assert(registered, "not registered"))
@@ -137,6 +143,19 @@ await t("view output passes viewSchema", () => {
   const v = registered.wire.viewSchema.parse(registered.wire.view(s))
   assert(v.enabled === true, "enabled")
   assert(v.flow === null, "no flow yet")
+})
+
+await t("the view carries a running flow through to the client", () => {
+  // The panel renders `view.flow`. Dropping it here leaves an empty dock with
+  // nothing indicating why, and the flow would appear to have never started.
+  const state = registered.stateSchema.parse({
+    enabled: true,
+    flow: { name: "demo", status: "active", startedAt: 100, since: 200, note: "n", branches: {}, passed: [] },
+  })
+  const v = registered.wire.viewSchema.parse(registered.wire.view(state))
+  assert(v.flow !== null, "the flow must survive the view")
+  assert(v.flow.name === "demo", `name lost: ${v.flow.name}`)
+  assert(v.flow.status === "active", `status lost: ${v.flow.status}`)
 })
 await t("apply returns the same reference for non turn/end events", () => {
   const s = { failures: 0 }
@@ -260,10 +279,63 @@ await t("apply with garbage workspaces does not throw", () => {
   host.apply(ctxWith(), { ...BASE_CFG, workspaces: "not an array" })
 })
 
+console.log("\n=== 4d. The plugin adopts the validated config, not the raw one ===")
+
+await t("a config written with flows as a list still starts a flow", async () => {
+  // The patch layer writes `flows` as a list; the runtime indexes it by name.
+  // `validate` is the only thing that converts one to the other, so if apply
+  // keeps the raw value every lookup misses and start_flow can never work —
+  // which is what happened, because validation only logged.
+  const raw = {
+    model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest" },
+    defaults: { contextBudgetRatio: 0.7, maxTurns: 3 },
+    workspaces: [{
+      path: "/tmp/dsh-decision-orchestrator-test-workspace",
+      enabled: true,
+      steps: [
+        { id: "plan", do: "send", prompt: "p1" },
+        { id: "wait", do: "stop", notifyText: "等你" },
+      ],
+      flows: [{ name: "demo", label: { en: "Demo", zh: "演示" }, steps: ["plan", "wait"] }],
+    }],
+  }
+  const ctx2 = ctxWithRecording()
+  const live = host.apply(ctx2, raw)
+  const tool = registeredTools.at(-1)
+  const session = {
+    id: "list-flows",
+    header: { cwd: "/tmp/dsh-decision-orchestrator-test-workspace" },
+    deriveMessages: () => [],
+  }
+  const r = await tool.execute({ flow: "demo" }, { agent: { session } })
+  assert(!r.isError, `start_flow must succeed, got ${JSON.stringify(r.content[0].text)}`)
+  assert(r.content[0].text.includes("Started"), `got ${r.content[0].text}`)
+  // And the panel can control it, which means the flow really is running.
+  const c = registeredCommands.at(-1).handler({ agent: { session }, rawInput: "pause" })
+  assert(c.kind === "success", `pause should succeed, got ${JSON.stringify(c)}`)
+  void live
+})
+
+await t("an invalid config leaves the feature off instead of half-configured", () => {
+  // A step id the flow references but never defines. Logging it and carrying on
+  // would run until it reached the missing step.
+  const raw = {
+    workspaces: [{
+      path: "/tmp/dsh-decision-orchestrator-test-workspace",
+      enabled: true,
+      steps: [{ id: "plan", do: "send", prompt: "p1" }],
+      flows: [{ name: "bad", steps: ["plan", "missing"] }],
+    }],
+  }
+  const before = registeredTools.length
+  host.apply(ctxWithRecording(), raw)
+  assert(registeredTools.length === before, "an invalid config must not register a flow tool")
+})
+
 console.log("\n=== 5. The two entry points the panel and the agent use ===")
 
 await t("the plugin registers exactly one tool, start_flow", () => {
-  assert(registeredTools.length === 1, `expected 1 tool, got ${registeredTools.length}`)
+  assert(FIRST_APPLY_TOOLS === 1, `expected 1 tool from the first apply, got ${FIRST_APPLY_TOOLS}`)
   assert(registeredTools[0].name === "start_flow", `got ${registeredTools[0].name}`)
 })
 
@@ -279,7 +351,7 @@ await t("start_flow refuses a flow it does not have", async () => {
 })
 
 await t("the plugin registers the flow command", () => {
-  assert(registeredCommands.length === 1, `expected 1 command, got ${registeredCommands.length}`)
+  assert(FIRST_APPLY_COMMANDS === 1, `expected 1 command from the first apply, got ${FIRST_APPLY_COMMANDS}`)
   assert(registeredCommands[0].name === "flow", `got ${registeredCommands[0].name}`)
 })
 
@@ -301,7 +373,7 @@ await t("the flow command spells every past tense correctly", async () => {
         plan: { id: "plan", do: "send", prompt: "p1" },
         wait: { id: "wait", do: "stop", notifyText: "等你" },
       },
-      flows: { demo: { label: { en: "Demo", zh: "演示" }, steps: ["plan", "wait"] } },
+      flows: [{ name: "demo", label: { en: "Demo", zh: "演示" }, steps: ["plan", "wait"] }],
     })),
   }
   for (const [action, said] of [["pause", "paused"], ["resume", "resumed"], ["cancel", "cancelled"]]) {

@@ -186,6 +186,27 @@ console.log("=== 0. The fixture is the configuration that ships ===")
  * When one is edited without the other, every assertion below passes against a
  * configuration nobody deploys.
  */
+/**
+ * Read one scalar field out of a YAML block, joining folded continuation lines.
+ *
+ * A block scalar may be wrapped across several indented lines; the value is the
+ * join of them. Stopping at the first line would compare a truncated string.
+ */
+function yamlScalar(block, field) {
+  const lines = block.split("\n")
+  const startIdx = lines.findIndex((l) => new RegExp(`^\\s*${field}:`).test(l))
+  if (startIdx < 0) return ""
+  const first = lines[startIdx].replace(new RegExp(`^\\s*${field}:\\s*`), "")
+  const parts = [first]
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const l = lines[i]
+    // A new `key:` at the same or lower indent ends the value.
+    if (/^\s*[a-zA-Z]+:/.test(l) || l.trim() === "") break
+    parts.push(l.trim())
+  }
+  return parts.join(" ").trim()
+}
+
 function checkProfileMatches() {
   const home = process.env.HOME
   if (!home) return "HOME is unset; skipped"
@@ -195,51 +216,92 @@ function checkProfileMatches() {
   } catch {
     return "no profile; skipped"
   }
-  // Pull the workspaces block out of the profile and run it through the same
-  // validator, rather than comparing text: the profile is indented differently
-  // and carries keys the fixture does not.
   const at = profileText.indexOf("- id: decision-orchestrator")
   if (at < 0) return "plugin not in profile; skipped"
   const chunk = profileText.slice(at)
   const wsAt = chunk.indexOf("workspaces:")
   if (wsAt < 0) return "no workspaces in profile; skipped"
-  // Take the lines from `workspaces:` to the next top-level entry.
-  const tail = chunk.slice(wsAt - 8).split("\n")
+  // The workspace block sits at 8 spaces under `config:`. Anything at 4 or less
+  // that is not blank starts the next plugin entry — `- id: forge` and the like
+  // — so that is where the block ends.
   const body = []
-  for (const line of tail) {
-    if (body.length > 0 && line.trim() && !line.startsWith(" ") && !line.startsWith("-")) break
+  for (const line of chunk.slice(wsAt).split("\n")) {
+    if (body.length > 0 && line.trim()) {
+      const indent = line.length - line.trimStart().length
+      if (indent <= 4) break
+    }
     body.push(line)
   }
-  const parsed = parseYamlFragment(body.join("\n"))
-  const r = validate({ workspaces: parsed.workspaces })
-  if (r.issues) return `profile does not validate: ${r.issues[0].message}`
-  const deployed = r.value.workspaces[0]
+  const text = body.join("\n")
 
+  // Compare the shapes the runtime actually reads, not the text: the profile is
+  // indented under `config:` and carries keys the fixture does not, so a
+  // text-level compare reports a mismatch on files describing the same thing.
   const problems = []
-  const fixtureSteps = workspace.steps
-  const deployedSteps = deployed.steps
-  const keys = Object.keys(fixtureSteps)
-  if (keys.length !== Object.keys(deployedSteps).length) {
-    problems.push(`step count differs: fixture ${keys.length}, deployed ${Object.keys(deployedSteps).length}`)
+
+  // Steps: `- id:` items, each compared on every prose field and its options.
+  const blocks = text.split(/^\s*- id:\s*/m).slice(1)
+  const byId = new Map()
+  for (const block of blocks) {
+    // A flow entry uses `- name:` so it never lands here.
+    const id = block.split("\n")[0].trim()
+    if (!id) continue
+    byId.set(id, block)
   }
-  for (const [id, step] of Object.entries(fixtureSteps)) {
-    const other = deployedSteps[id]
-    if (!other) { problems.push(`step ${id} is missing from the profile`); continue }
+  for (const [id, step] of Object.entries(workspace.steps)) {
+    const block = byId.get(id)
+    if (!block) { problems.push(`step ${id} is missing from the profile`); continue }
     for (const field of ["do", "prompt", "notifyText", "expect", "question"]) {
-      if ((step[field] ?? "") !== (other[field] ?? "")) {
-        problems.push(`step ${id}.${field} differs`)
+      const found = yamlScalar(block, field)
+      if ((step[field] ?? "") !== found) problems.push(`step ${id}.${field} differs`)
+    }
+    if (step.do === "branch") {
+      const opts = optionsOf(block)
+      if (JSON.stringify(step.options ?? {}) !== JSON.stringify(opts)) {
+        problems.push(`step ${id}.options differs`)
       }
     }
-    if (JSON.stringify(step.options ?? {}) !== JSON.stringify(other.options ?? {})) {
-      problems.push(`step ${id}.options differs`)
-    }
+  }
+  for (const id of byId.keys()) {
+    if (!(id in workspace.steps)) problems.push(`step ${id} is in the profile but not the fixture`)
+  }
+
+  // Flows: name and step order.
+  const flowBlocks = text.split(/^\s*- name:\s*/m).slice(1)
+  const deployed = new Map()
+  for (const block of flowBlocks) {
+    const name = block.split("\n")[0].trim()
+    const list = /^\s*steps:\s*\[([^\]]*)\]/m.exec(block)?.[1] ?? ""
+    deployed.set(name, list.split(",").map((x) => x.trim()).filter(Boolean))
   }
   for (const [name, flow] of Object.entries(workspace.flows)) {
-    const other = deployed.flows[name]
-    if (!other) { problems.push(`flow ${name} is missing from the profile`); continue }
-    if (flow.steps.join(",") !== other.steps.join(",")) problems.push(`flow ${name}.steps differs`)
+    const steps = deployed.get(name)
+    if (!steps) { problems.push(`flow ${name} is missing from the profile`); continue }
+    if (flow.steps.join(",") !== steps.join(",")) problems.push(`flow ${name}.steps differs`)
   }
+  for (const name of deployed.keys()) {
+    if (!(name in workspace.flows)) problems.push(`flow ${name} is in the profile but not the fixture`)
+  }
+
   return problems.length ? problems.join("; ") : ""
+}
+
+/** Read a branch's `options:` map out of one step block. */
+function optionsOf(block) {
+  const lines = block.split("\n")
+  const at = lines.findIndex((l) => /^\s*options:\s*$/.test(l))
+  if (at < 0) return {}
+  const indent = lines[at].length - lines[at].trimStart().length
+  const out = {}
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim()) continue
+    const deeper = line.length - line.trimStart().length
+    if (deeper <= indent) break
+    const m = /^\s+([\w-]+):\s*(\S+)\s*$/.exec(line)
+    if (m) out[m[1]] = m[2]
+  }
+  return out
 }
 
 {
