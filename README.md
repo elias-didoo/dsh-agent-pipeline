@@ -179,6 +179,21 @@ them, one scenario went from 14.8% to 51.1% confidence on the right answer.
 produced a plan" fits both before and after the review. "A numbered list of
 changes" is something only the summarised reply has.
 
+**Let the model read position, not make the policy call.** Where you have
+already decided what happens next, say which message came last:
+
+```yaml
+- id: selfcheck_go
+  when: The last plugin message was the third-round question, and the agent has
+        replied to it.
+  do: send
+  prompt: Run another self-check
+```
+
+That works for any reply. Written instead as "the agent says it needs another
+round", the model had to decide a question you had already answered, and got it
+wrong on all three replies tested — "yes", "no", and a bare "ok".
+
 Write them in whatever language you configured the rules in. Chinese and English
 both work.
 

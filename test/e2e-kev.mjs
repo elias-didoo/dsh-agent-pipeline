@@ -185,53 +185,54 @@ const CASES = [
     label: "开干后改完",
     text: "代码改完了，改了 3 个文件，功能已实现。",
     prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 300000 },
     ],
+    opening: "开干",
     expect: "selfcheck_1",
   },
   {
     label: "第一轮自检完",
     text: "发现 2 处越界改动，已修正；还加了一个边界测试。",
     prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 300000 },
       PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
     ],
+    opening: "开干",
     expect: "selfcheck_2",
   },
   {
     label: "第二轮完·仍有问题",
     text: "又发现 1 处问题，边界条件没处理，已修复。",
     prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 300000 },
       PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
       PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
     ],
+    opening: "开干",
     expect: "selfcheck_3",
   },
   {
     label: "第二轮完成·没问题",
     text: "全部检查通过，TS 和 lint 都是 0 error，没发现遗留问题。",
     prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 300000 },
       PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
       PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
     ],
+    opening: "开干",
     expect: "push",
   },
   {
     label: "第三轮答复后",
     text: "还需要，重点应该放在边界条件上。",
     prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 300000 },
       PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
       PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
       PLUGIN("selfcheck_3", "每次自检都能发现新问题，你觉得还需要下次自检吗？"),
     ],
+    opening: "开干",
     expect: "selfcheck_go",
   },
   {
     label: "已推送",
     text: "已推送，HEAD -> main，工作树干净。",
+    opening: "开干",
     expect: "finished",
   },
   {
@@ -245,11 +246,11 @@ const CASES = [
     label: "第三轮后·说不用也继续",
     text: "我觉得不需要再做自检了，代码已经足够干净。",
     prior: [
-      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 400000 },
       PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
       PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
       PLUGIN("selfcheck_3", "每次自检都能发现新问题，你觉得还需要下次自检吗？"),
     ],
+    opening: "开干",
     expect: "selfcheck_go",
   },
   {
