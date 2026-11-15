@@ -141,6 +141,19 @@ The plugin guarantees a `send` never repeats: it counts the messages it has
 already sent, by `id`, and refuses to send the same one twice. A `stop` halts
 auto-advance once and then stays quiet until the user speaks again.
 
+**When the model's first choice has already fired**, the plugin takes the
+next-best candidate above a low floor instead of ending the turn. Two adjacent
+decision points can score within a point of each other — measured 29.9% and
+29.2% on a third self-check round — and there the model's second choice is the
+right one while its first is the same situation one round earlier. The `pick`
+log entry carries `fellBackFrom` when this happens.
+
+That fallback floor is lower than `confidenceFloor`, on purpose. The normal
+floor guards a first answer, where a low score means the conversation matched
+nothing in particular. A fallback follows an answer that already matched
+something, so its neighbour is a correction rather than a guess.`
+A spent `stop` never falls back: stopping is a decision to wait, not a step.
+
 ### Writing `when` that works
 
 The model separates situations by the boundaries between them, and it can only

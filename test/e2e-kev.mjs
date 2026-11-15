@@ -63,14 +63,63 @@ function loadFixture() {
   }
 }
 
+/**
+ * The tunables the fixture does not carry: model endpoint and defaults.
+ *
+ * These are not decision points, but a drift in them changes behaviour just as
+ * much — a different confidenceFloor silently changes which answers count as
+ * confident. Read from the profile when it is there, otherwise the defaults
+ * below stand in.
+ */
+function loadTunables() {
+  const fallback = {
+    model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
+    defaults: {
+      maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.15,
+      humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3,
+    },
+  }
+  const home = process.env.HOME
+  if (!home) return fallback
+  let profile
+  try {
+    profile = readFileSync(join(home, ".dsh/profiles/desktop/cordis.patch.yml"), "utf8")
+  } catch {
+    return fallback
+  }
+  const block = profile.slice(profile.indexOf("    - id: decision-orchestrator"))
+  const num = (name, fb) => {
+    const m = new RegExp(`^\\s*${name}:\\s*([\\d.]+)\\s*$`, "m").exec(block)
+    return m ? Number(m[1]) : fb
+  }
+  const str = (name, fb) => {
+    const m = new RegExp(`^\\s*${name}:\\s*(.+?)\\s*$`, "m").exec(block)
+    return m ? m[1] : fb
+  }
+  return {
+    model: {
+      baseUrl: str("baseUrl", fallback.model.baseUrl),
+      name: str("name", fallback.model.name),
+      timeoutMs: num("timeoutMs", fallback.model.timeoutMs),
+    },
+    defaults: {
+      maxIterations: num("maxIterations", fallback.defaults.maxIterations),
+      failureRetryLimit: num("failureRetryLimit", fallback.defaults.failureRetryLimit),
+      confidenceFloor: num("confidenceFloor", fallback.defaults.confidenceFloor),
+      humanCooldownMs: num("humanCooldownMs", fallback.defaults.humanCooldownMs),
+      quietWindowMs: num("quietWindowMs", fallback.defaults.quietWindowMs),
+      contextBudgetRatio: num("contextBudgetRatio", fallback.defaults.contextBudgetRatio),
+      maxTurns: num("maxTurns", fallback.defaults.maxTurns),
+    },
+  }
+}
+
 const workspace = loadFixture()
+const tunables = loadTunables()
 const WS = workspace.path
 const config = {
-  model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
-  defaults: {
-    maxIterations: 20, failureRetryLimit: 3, confidenceFloor: 0.15,
-    humanCooldownMs: 30000, quietWindowMs: 30000, contextBudgetRatio: 0.7, maxTurns: 3,
-  },
+  model: tunables.model,
+  defaults: tunables.defaults,
   workspaces: [workspace],
 }
 
@@ -191,6 +240,19 @@ const CASES = [
     expect: "waiting",
   },
   {
+    // The third round is spent, so the model's answer is the same situation one
+    // round earlier. The fallback is what keeps the pipeline moving here.
+    label: "第三轮后·说不用也继续",
+    text: "我觉得不需要再做自检了，代码已经足够干净。",
+    prior: [
+      { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "开干" }], time: Date.now() - 400000 },
+      PLUGIN("selfcheck_1", "仔细检查你刚改动的所有文件。"),
+      PLUGIN("selfcheck_2", "该修的问题都修了吗？有问题就去修"),
+      PLUGIN("selfcheck_3", "每次自检都能发现新问题，你觉得还需要下次自检吗？"),
+    ],
+    expect: "selfcheck_go",
+  },
+  {
     label: "冲突·确认为真→回评审",
     text: "确实有冲突，auth.ts 和 router.ts 两处，我手动合并了。",
     prior: [PLUGIN("conflict", "刚才rebase/merge最新 head 时是否有冲突，你是怎么解决的")],
@@ -239,14 +301,24 @@ function checkProfileMatches() {
     `decision points differ\n  deployed: ${deployedIds.join(",")}\n  fixture:  ${fixtureIds.join(",")}`,
   )
 
-  // Every `when` must match too: the ids matching while the prose drifts would
-  // leave the model reading texts that were never tested.
-  for (const d of workspace.decisions) {
-    const m = new RegExp(`- id: ${d.id}\\s*\\n\\s*when: (.+?)\\s*$`, "m").exec(deployed)
-    assert(m, `decision ${d.id} is missing from the profile`)
-    assert(m[1].trim() === d.when, `decision ${d.id} when differs\n  deployed: ${m[1].trim()}\n  fixture:  ${d.when}`)
+  // Compare every field, not just the id list. Matching ids with drifted prose
+  // would leave the model reading criteria that were never tested, and a
+  // drifted prompt would send text nobody reviewed.
+  const blocks = deployed.split(/^\s*- id:\s*/m).slice(1)
+  for (const [i, d] of workspace.decisions.entries()) {
+    const block = blocks[i]
+    assert(block, `decision ${d.id} is missing from the profile`)
+    for (const field of ["when", "do", "prompt", "notifyText"]) {
+      const m = new RegExp(`^\\s*${field}:\\s*(.+?)\\s*$`, "m").exec(block)
+      const deployedValue = m ? m[1] : ""
+      const fixtureValue = d[field] ?? ""
+      assert(
+        deployedValue === fixtureValue,
+        `decision ${d.id} ${field} differs\n  deployed: ${deployedValue}\n  fixture:  ${fixtureValue}`,
+      )
+    }
   }
-  return `matches ${deployedIds.length} decision points`
+  return `matches ${deployedIds.length} decision points across every field`
 }
 
 console.log("=== 部署配置与 fixture 一致 ===")
