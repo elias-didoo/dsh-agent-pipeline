@@ -26,6 +26,7 @@ const suites = [
   ["apply.mjs", "apply() wiring (projection registration and schemas)"],
   ["context.mjs", "Context budget and last-message priority"],
   ["confidence.mjs", "Confidence normalization"],
+  ["stages.mjs", "Stage definitions and behavior contract"],
   ["phase.mjs", "Stage machine (progress derivation + pickRule)"],
   ["flow.mjs", "Main loop branches (fake ctx, never the real host)"],
   ["e2e-kev.mjs", "Live model end-to-end", !fast],

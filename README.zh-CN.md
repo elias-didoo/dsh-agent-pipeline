@@ -62,16 +62,30 @@ npm test          # 可选，验证环境
 
 **为什么要分成两步**：Kev 擅长判断「现在在讨论方案还是改代码」，但判断不了「这是第几轮自检」——后者不在对话文本里。所以阶段交给模型，顺序交给计数器。
 
-## 六个阶段
+## 阶段
 
-| 阶段 | 含义 | 插件通常做什么 |
+一个阶段只回答一个问题：agent 现在处于工作的哪一步？它的 `behavior` 决定
+插件知道这一点之后做什么。
+
+下面的阶段是**默认值**，工作区可以整套替换 —— 见[自定义阶段](#自定义阶段)。
+
+| 阶段 | behavior | 含义 |
 |---|---|---|
-| `planning` | 用户在讨论需求或方案，agent 从未改过代码 | 发方案评审、发汇总 |
-| `implementing` | 用户说了开干，agent 正在改代码 | **不动作**（不打断它） |
-| `selfchecking` | agent 已完成改动，在做自检 | 按轮次发自检提示，最后发推送 |
-| `waiting` | agent 停下，明确等你决定 | **停下来**，不自动回 |
-| `finished` | 任务彻底结束（已推送或明确说完成） | **停下来** |
-| `conflict` | rebase/merge 遇到冲突 | 发冲突追问 |
+| `planning` | `sequence` | 用户在讨论需求或方案，agent 从未改过代码 |
+| `implementing` | `passive` | agent 正在改代码 |
+| `selfchecking` | `sequence` | agent 已完成改动，在做自检 |
+| `waiting` | `terminal` | agent 停下，明确等你决定 |
+| `finished` | `terminal` | 任务彻底结束 |
+| `conflict` | `once` | rebase/merge 遇到冲突 |
+
+### 四种 behavior
+
+| behavior | 做什么 |
+|---|---|
+| `sequence` | 按配置顺序发 `send` 规则，每次一条。全发完后交给该阶段的 `stop` 规则。 |
+| `once` | 发第一条还没发过的 `send` 规则，之后不再选中。 |
+| `terminal` | 不发消息，只发 `stop` 规则，让自动推进停下来等你。 |
+| `passive` | 完全不动作。用于 agent 正在干活、不该被打断的阶段。 |
 
 ## 规则怎么配
 
@@ -178,6 +192,88 @@ npm test          # 可选，验证环境
 
 顺序靠**数日志里发过的消息**决定，不是靠模型判断，所以准确率是 100%。
 
+## 自定义阶段
+
+阶段是数据。增、删、改名都可以 —— 流水线里没有任何地方按阶段名分支。
+
+定义 `stages` 之后，内置列表被**整套替换**：
+
+```yaml
+    stages:
+      - id: intake
+        behavior: sequence
+        label: { en: "Intake", zh: "接需求" }
+        criteria: 用户刚提出需求，agent 还在确认要做什么
+      - id: coding
+        behavior: passive
+        label: { en: "Coding", zh: "写代码" }
+        criteria: agent 正在修改代码文件
+      - id: handover
+        behavior: terminal
+        label: { en: "Handover", zh: "交接" }
+        criteria: agent 已经推送完成，或明确宣告需求结束
+
+    workspaces:
+      - path: /Users/you/project
+        enabled: true
+        rules:
+          - id: clarify
+            when: intake        # ← 指向你自己定义的阶段
+            scene: 需求还不清楚
+            action: send
+            prompt: 你想改哪个页面？
+          - id: confirm
+            when: intake
+            scene: 需求已确认
+            action: stop
+          - id: done
+            when: handover
+            scene: 已完成
+            action: stop
+```
+
+### 字段要求
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `id` | 是 | 唯一。规则的 `when` 引用它。 |
+| `behavior` | 是 | `sequence` / `once` / `terminal` / `passive` 之一。 |
+| `label.en` / `label.zh` | 是 | 面板显示用，client 按界面语言选。 |
+| `criteria` | 是 | 送给模型的判据。**中文效果最好**，见下文。 |
+
+### 校验会拦住的两件事
+
+**至少要有一个 `terminal` 阶段。** 否则 `sequence` 阶段发完所有规则后无处可去，
+之后每一轮都只会记一条 skip，流程永远不收敛。
+
+**每个阶段都要有 `criteria`。** 模型靠这些描述去匹配对话。判据含糊的阶段，
+模型永远选不中。
+
+### 判据怎么写才有效
+
+模型区分阶段靠的是阶段之间的**边界**，不是阶段名。有两点实测有效：
+
+- **写出这个阶段和相邻阶段的区别**，而不只是它是什么。
+- **用中文写。** 真实会话的九个场景里，中文判据命中 8/9，同样描述的英文译版
+  只有 5/9，且短回复下会跌破置信度门槛。交叉验证表明决定因素是判据语言，
+  不是对话语言。
+
+加完阶段后要试跑：走一遍会进入该阶段的流程，看日志里 `judge` 事件是否选中了它。
+
+## 语言
+
+有两处语言，规则不同。
+
+| 位置 | 跟随 |
+|---|---|
+| 面板文案、发给 agent 的「请继续」 | **DSH 的界面语言设置** |
+| 阶段判据（送给决策模型的文本） | **始终中文** |
+
+面板从 DSH 设置读语言，不用额外配置就和界面一致。如果从来没在 DSH 里显式
+选过语言，插件回退到英文。
+
+判据保持中文的原因见上：模型在中文下区分阶段可靠得多。它是模型输入，不是文档。
+
 ## 置信度
 
 Kev 返回的是概率分布。插件用的是**归一化置信度**：
@@ -266,35 +362,28 @@ agent 因网络中断或 provider 超时停止时，连续重发到 `failureRetr
 - 不会被当成「人工活动」而自我抑制
 - 插件靠它数日志推导阶段进度
 
-## 关于提醒
+## 看日志
 
-**本插件不发系统通知，也不往会话里发消息。**
-
-它只在进程内记录状态。要知道 agent 何时停下、为什么停下，请看日志：
+插件不发通知。要知道它何时停下、为什么停下，看日志：
 
 ```bash
 tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 ```
 
-全部 `ev`：
-
 | `ev` | 含义 |
 |---|---|
-| `apply` / `projection-ready` | 插件装配与 projection 就绪（每次启动或重载记一次） |
+| `apply` / `projection-ready` | 插件挂载、投影就绪 |
+| `locale` | 本次进程解析出的界面语言 |
 | `judge` | 一次判定；含 `stage`、`confidence`、`rawConfidence` |
 | `pick` | 选中了哪条规则；含 `stage`、`ruleId`、`progress` |
-| `halt` | **命中 `action: stop` 的规则，自动推进已暂停**；`ruleId` 说明是哪条 |
-| `stop` | **因错误、迭代上限或判定卡住而终止**；`why` 说明原因 |
+| `halt` | 命中 stop 规则，自动推进已暂停；`ruleId` 说明是哪条 |
+| `stop` | 因错误或迭代上限而终止；`why` 说明原因 |
 | `uncertain` | 置信度不足，未做判定 |
 | `send` | 自动发送了一条提示词；含 `ruleId`、`iterations` |
 | `send-fail` | 发送失败；含 `err` |
-| `skip` | 被拦下没动作；`why` 说明原因（仲裁、等待态、空输入等） |
-| `error` | 单次执行出错但未到终止阈值；含 `code`、`failures` |
+| `skip` | 被拦下没动作；`why` 说明原因 |
+| `error` | 单次执行出错但未到终止阈值 |
 | `retry` | 网络中断后自动重发「请继续」 |
-
-**为什么不用系统通知**：插件运行在 DSH 的纯 Node 进程里（`ELECTRON_RUN_AS_NODE=1`），
-拿不到 Electron 的 Notification。退回 `osascript` 的话，macOS 会把通知归属给
-Script Editor，图标错误且点击会打开该应用。宁可没有提醒，也不发一条误导的通知。
 
 ## 测试
 

@@ -74,8 +74,7 @@ t("apply returns the same reference for non turn/end events", () => {
 })
 t("apply does not count on turn/end (guards against double counting)", () => {
   // iterations / failures are held by the main loop through mutate. If the
-  // projection counted them too, one turn/end would be counted twice — which
-  // once made `limit = 3` retry only once.
+  // projection counted them too, one turn/end would be counted twice.
   const s = { failures: 0 }
   const n = registered.apply(s, { type: "turn/end", data: { reason: { kind: "error" } } })
   assert(n === s, "apply must return the identical reference")

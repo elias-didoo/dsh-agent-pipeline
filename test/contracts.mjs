@@ -58,9 +58,9 @@ console.log("\n=== 3. slots contract ===")
 await t("slots.inject uses the generator form", () =>
   has(clientSrc, /slots\.inject\("shell\.overlay",\s*function\s*\*/, "slots.inject callback must be a generator"))
 await t("the component is register's second argument", () =>
-  has(clientSrc, /slots\.register\([\s\S]*?\},\s*PanelHost\s*,?\s*\)/, "component must be register's second argument"))
+  has(clientSrc, /slots\.register\([\s\S]*?\},\s*makePanelHost\([^)]*\)\s*,?\s*\)/, "component must be register's second argument"))
 await t("register definition has name/id/inject", () => {
-  const m = /slots\.register\(([\s\S]*?)\},\s*PanelHost/.exec(clientSrc)
+  const m = /slots\.register\(([\s\S]*?)\},\s*makePanelHost/.exec(clientSrc)
   assert(m, "register call not found")
   for (const k of ["name", "id", "inject"]) {
     assert(new RegExp(`\\b${k}\\s*:`).test(m[1]), `register definition missing ${k}`)
@@ -101,41 +101,43 @@ await t("every ctx.<service> used is declared in inject", () => {
   assert(missing.length === 0, `inject is missing: ${missing.join(", ")}`)
 })
 
-console.log("\n=== 4c. client and config stage definitions stay in sync ===")
+console.log("\n=== 4c. client holds no stage or action table of its own ===")
 
-await t("client STAGE_ORDER === config.STAGES", async () => {
-  // The two definitions are independent; when they drift the client renders
-  // rules under the wrong stage.
-  const { STAGES } = await import("../lib/config.js")
-  const m = /const STAGE_ORDER = (\[[^\]]*\])/.exec(clientSrc)
-  assert(m, "STAGE_ORDER not found")
-  const order = JSON.parse(m[1])
-  assert(
-    JSON.stringify(order) === JSON.stringify(STAGES),
-    `client ${JSON.stringify(order)} does not match config ${JSON.stringify(STAGES)}`,
-  )
+await t("client reads stage order from the projection, not a hardcoded list", () => {
+  // A hardcoded copy in the client is a second source of truth: it drifts from
+  // config and the panel then groups rules under the wrong heading.
+  assert(!/const STAGE_ORDER\s*=/.test(clientSrc), "client must not hardcode a stage order")
+  assert(!/const STAGE_TEXT\s*=/.test(clientSrc), "client must not hardcode stage labels")
+  assert(/info\.stages/.test(clientSrc) || /rules, stages, t, locale/.test(clientSrc), "client must render stages from the projection")
 })
 
-await t("client STAGE_TEXT covers every stage", async () => {
-  const { STAGES } = await import("../lib/config.js")
-  const m = /const STAGE_TEXT = \{([\s\S]*?)\}/.exec(clientSrc)
-  assert(m, "STAGE_TEXT not found")
-  const keys = [...m[1].matchAll(/(\w+)\s*:/g)].map((x) => x[1])
-  for (const st of STAGES) {
-    assert(keys.includes(st), `STAGE_TEXT is missing ${st}`)
-  }
-  assert(keys.length === STAGES.length, `STAGE_TEXT has extra keys: ${keys.filter((k) => !STAGES.includes(k))}`)
+await t("client action labels come from the dictionary, not a local table", () => {
+  assert(!/const ACTION_TEXT\s*=/.test(clientSrc), "client must not hardcode action text")
+  assert(/t\(`action\.\$\{r\.action\}`\)/.test(clientSrc), "action label must be translated by key")
 })
 
-await t("renderStages groups unknown stages separately (never folds into planning)", async () => {
-  const m = /function renderStages\(rules\) \{[\s\S]*?\n    \}/.exec(clientSrc)
+await t("client registers a dictionary for every language the host ships", async () => {
+  const m = /const DICT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
+  assert(m, "DICT not found")
+  const langs = [...m[1].matchAll(/(\bzh|\ben):\s*\{/g)].map((x) => x[1])
+  assert(langs.includes("zh"), "dictionary must cover zh")
+  assert(langs.includes("en"), "dictionary must cover en")
+  assert(/localeSvc\?\.register\?\.\(NS, id, dict\)/.test(clientSrc), "dictionary must be registered with the locale service")
+})
+
+await t("renderStages groups undefined stages separately (never folds into a known one)", () => {
+  const m = /function renderStages\(rules, stages, t, locale\) \{[\s\S]*?\n    \}/.exec(clientSrc)
   assert(m, "renderStages not found")
-  // Confirm at source level that the "unknown means planning" fallback is gone.
-  assert(
-    !/STAGE_ORDER\.includes\(r\.when\)\s*\?\s*r\.when\s*:\s*"planning"/.test(m[0]),
-    "renderStages still silently folds unknown stages into planning",
-  )
-  assert(/unknown\.length > 0/.test(m[0]), "renderStages does not group unknown stages separately")
+  assert(/unknown\.length > 0/.test(m[0]), "renderStages must group unknown stages separately")
+  assert(/unknown/.test(m[0]) && /t\("stage\.unknown"\)/.test(m[0]), "unknown group must be labelled")
+})
+
+await t("client never hardcodes a stage id", async () => {
+  const { STAGES } = await import("../lib/config.js")
+  for (const st of STAGES) {
+    const re = new RegExp(`["'\`]${st}["'\`]`)
+    assert(!re.test(clientSrc), `client must not hardcode the stage id ${st}`)
+  }
 })
 
 console.log("\n=== 4d. The test harness itself ===")
@@ -157,18 +159,16 @@ await t("every test file's t() awaits fn()", async () => {
   assert(bad.length === 0, `these files do not await in t(), so async assertion failures vanish: ${bad.join(", ")}`)
 })
 
-await t("client ACTION_TEXT covers every config action", async () => {
-  // The two definitions are independent; out of sync, the panel shows the raw
-  // action name straight to the user.
+await t("the action enum has one owner", () => {
   const src = readFileSync(join(ROOT, "lib/config.js"), "utf8")
   const m = /const ACTIONS = new Set\((\[[^\]]*\])\)/.exec(src)
   assert(m, "ACTIONS not found")
   const actions = JSON.parse(m[1])
-  const cm = /const ACTION_TEXT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
-  assert(cm, "ACTION_TEXT not found")
-  const keys = [...cm[1].matchAll(/(\w+)\s*:/g)].map((x) => x[1])
-  for (const a of actions) assert(keys.includes(a), `ACTION_TEXT is missing ${a}`)
-  assert(keys.length === actions.length, `ACTION_TEXT has extra keys: ${keys.filter((k) => !actions.includes(k))}`)
+  const cm = /const DICT = \{([\s\S]*?)\n    \}/.exec(clientSrc)
+  assert(cm, "DICT not found")
+  for (const a of actions) {
+    assert(cm[1].includes(`"action.${a}"`), `dictionary is missing action.${a}`)
+  }
 })
 
 console.log("\n=== 5. v4 message-source contract ===")

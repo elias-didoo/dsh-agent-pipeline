@@ -28,6 +28,7 @@ const PROJECTION_KEY = "decision-orchestrator"
 function initialState(header, config) {
   let rulesEnabled = false
   let rulesView = []
+  let stagesView = []
   try {
     const wsPath = header?.cwd
     const ws = (config?.workspaces ?? []).find((w) => w?.path === wsPath)
@@ -43,9 +44,18 @@ function initialState(header, config) {
       }))
     }
   } catch { /* ignore */ }
+  // Stage definitions the client renders its group headings from. Read once at
+  // init: they come from the same config the rules do.
+  try {
+    stagesView = (config?.stages ?? []).map((st) => ({
+      id: st.id,
+      behavior: st.behavior,
+      label: { en: st.label?.en ?? st.id, zh: st.label?.zh ?? st.id },
+    }))
+  } catch { /* ignore */ }
   // The projection holds derived facts only; runtime counters belong to the
   // main loop and never go here.
-  return { rulesEnabled, rulesView }
+  return { rulesEnabled, rulesView, stagesView }
 }
 
 /**
@@ -56,8 +66,7 @@ function applyEvent(state) {
   // Deliberately identity: no counting happens here.
   //
   // iterations / failures are runtime decisions held by the main loop through
-  // `mutate`. Counting them here too would double-count one turn/end — this
-  // once made `limit = 3` retry only once.
+  // `mutate`. Counting them here as well would count one turn/end twice.
   //
   // The projection carries only facts rebuildable from the log — currently the
   // workspace rule snapshot taken in `init`. Returning the same reference also
@@ -85,6 +94,7 @@ const stateSchema = {
     return {
       rulesEnabled: v.rulesEnabled === true,
       rulesView: Array.isArray(v.rulesView) ? v.rulesView : [],
+      stagesView: Array.isArray(v.stagesView) ? v.stagesView : [],
     }
   },
 }
@@ -117,6 +127,7 @@ function viewOf(state) {
   return {
     enabled: state?.rulesEnabled === true,
     rules: Array.isArray(state?.rulesView) ? state.rulesView : [],
+    stages: Array.isArray(state?.stagesView) ? state.stagesView : [],
   }
 }
 
@@ -145,12 +156,47 @@ function agentForSession(ctx, session) {
   return undefined
 }
 
+/**
+ * UI language chosen in DSH settings, as `"zh"` or `"en"`.
+ *
+ * The locale plugin stores its preference in the Host user-settings document
+ * under the `locale` namespace, so it is readable from the Host side without
+ * any Client round trip. When the user has never picked a language the field is
+ * absent and DSH falls back to the browser setting, which is not visible here —
+ * English is the safe default in that case.
+ *
+ * @returns {"zh" | "en"}
+ */
+function resolveUiLocale(ctx) {
+  try {
+    // Optional service: a profile without the settings plugin must still load
+    // this one, so it is fetched rather than declared as a hard injection.
+    const settings = ctx?.get?.("settings")
+    if (!settings || typeof settings.describe !== "function") return "en"
+    const described = settings.describe({ redactSecrets: true })
+    const ns = described?.namespaces?.find?.((n) => n?.ns === "locale")
+    const pref = ns?.value?.preference
+    return typeof pref === "string" && pref.toLowerCase().startsWith("zh") ? "zh" : "en"
+  } catch {
+    return "en"
+  }
+}
+
 export function apply(ctx, config) {
+  // `config` is reassigned below to fold in the resolved UI locale.
+  // eslint-disable-next-line no-param-reassign
   const queue = new SerialQueue()
   const inflight = new Set()
 
   // Apply-entry marker: distinguishes "plugin loaded" from "stale process".
   log({ ev: "apply", pid: process.pid })
+
+  // The UI language drives the prompts sent to the agent and the panel text.
+  // Settings win over the config field, so following the DSH setting is the
+  // default behaviour rather than something the user must duplicate.
+  const effectiveLocale = resolveUiLocale(ctx)
+  config = { ...(config && typeof config === "object" ? config : {}), locale: effectiveLocale }
+  log({ ev: "locale", resolved: effectiveLocale })
 
   // Config validation (never blocks startup, logs only)
   try {
@@ -168,7 +214,7 @@ export function apply(ctx, config) {
   try {
     projectionHandle = ctx.sessionProjections.register({
       key: PROJECTION_KEY,
-      stateVersion: 1,
+      stateVersion: 2,
       stateSchema,
       init: (header) => initialState(header, config),
       apply: applyEvent,

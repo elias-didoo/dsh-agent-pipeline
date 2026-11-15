@@ -342,8 +342,8 @@ await t("iterations hit the cap → stop", async () => {
 
 console.log("\n=== 5c. The stage machine fires each rule once ===")
 await t("the same state repeatedly triggered never resends the same prompt", async () => {
-  // This replaces the removed deadlock detection: pickRule advances by
-  // byRuleId, and a send rule is never returned again once fired.
+  // pickRule advances by byRuleId, and a send rule is never returned again
+  // once fired — so the same prompt cannot go out twice.
   const agent = makeAgent()
   const ruleIds = []
   let state = {}
@@ -453,8 +453,8 @@ await t("model unreachable and over the limit → stops with stoppedReason + log
   assert(String(mutated?.stoppedReason).startsWith("judge-failure"), `stoppedReason should start with judge-failure, got ${mutated?.stoppedReason}`)
   assert(agent.sent.length === 0, "stopping must not send")
 
-  // This path used to surface through a system notification; with notifications
-  // gone it must leave a trace in the log.
+  // Nothing surfaces this to the user at runtime, so the log is the only
+  // place this can be observed.
   // Only new lines count: the log file accumulates, and historical entries
   // would let the assertion pass vacuously.
   const all = readFileSync(logPath, "utf8").trim().split("\n")

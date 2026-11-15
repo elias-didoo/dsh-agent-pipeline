@@ -6,22 +6,6 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that judges what an 
 
 > **It does not think for you.** It hands one judgement — "what should happen next?" — to a model, then executes the rules you configured.
 
-## A note on language
-
-Source code, comments and documentation in this repository are **English**.
-
-Three things stay Chinese on purpose, because they are runtime data rather than
-documentation:
-
-- **Stage criteria** (`STAGE_CRITERIA` in `lib/context.js`) — the descriptions
-  sent to the model. Measured on identical inputs, Chinese criteria scored 8/8
-  while an English translation of the same text fell below the confidence floor
-  on short replies. Translating it is not a safe mechanical edit.
-- **The retry prompt** in `lib/core.js` — text the agent receives.
-- **Panel UI strings** in `client.js` — what the user reads in the sidebar.
-
-A Chinese README is available at [README.zh-CN.md](README.zh-CN.md).
-
 ## Requirements
 
 - **DSH Desktop** — the plugin needs the client runtime shipped inside `app.asar`.
@@ -68,7 +52,7 @@ you ask → agent works → agent stops
                           ↓
               plugin reads the agent's last reply + the previous few turns
                           ↓
-              local model picks one of six stages
+              local model picks one of the stages
                           ↓
               plugin counts its own messages in the log to know
               how far into that stage we are
@@ -79,16 +63,31 @@ you ask → agent works → agent stops
 
 **Why the split.** The model is good at "are we still discussing the plan, or already editing code?" It cannot tell "is this the second or the third self-check round" — that information is not in the conversation text. So stages go to the model, ordering goes to a counter.
 
-## The six stages
+## Stages
 
-| Stage | Meaning | What the plugin does |
+A stage answers one question: which part of the work is the agent in right now?
+Its `behavior` decides what the plugin does once that is known.
+
+The stages below are **defaults**. A workspace may replace the whole list — see
+[Customizing stages](#customizing-stages).
+
+| Stage | Behavior | Meaning |
 |---|---|---|
-| `planning` | Requirements or design under discussion; no code touched yet | Run review, then summary rules |
-| `implementing` | Code is being edited | **Nothing** (do not interrupt) |
-| `selfchecking` | Code changes done, self-check in progress | Send check prompts by round, then push |
-| `waiting` | Agent stopped and is explicitly waiting on you | **Stop** and wait |
-| `finished` | Work is fully done (pushed, or explicitly declared complete) | **Stop** |
-| `conflict` | Rebase/merge hit conflicts | Ask how they were resolved |
+| `planning` | `sequence` | Requirements or design under discussion; no code touched yet |
+| `implementing` | `passive` | Code is being edited |
+| `selfchecking` | `sequence` | Code changes done, self-check in progress |
+| `waiting` | `terminal` | Agent stopped and is explicitly waiting on you |
+| `finished` | `terminal` | Work is fully done (pushed, or explicitly declared complete) |
+| `conflict` | `once` | Rebase/merge hit conflicts |
+
+### The four behaviors
+
+| Behavior | What happens |
+|---|---|
+| `sequence` | Fire the stage's `send` rules in config order, one per visit. Once all have fired, hand over to the stage's `stop` rule. |
+| `once` | Fire the first unfired `send` rule, then stop selecting for this stage. |
+| `terminal` | Never send — fire the `stop` rule so auto-advance halts and waits for you. |
+| `passive` | Do nothing. For stages where the agent is working and must not be nudged. |
 
 ## Configuring rules
 
@@ -180,7 +179,7 @@ Edit this plugin's `config` inside `~/.dsh/profiles/desktop/cordis.patch.yml`:
 | Field | Description |
 |---|---|
 | `id` | Rule identifier, unique within a workspace |
-| `when` | **Which stage this rule belongs to** — must be one of the six above |
+| `when` | **Which stage this rule belongs to** — a defined stage id (the six above, or your own) |
 | `scene` | Human-readable description, helps you remember when it applies (not sent to the model) |
 | `action` | `send` auto-send / `stop` wait for you / `silent` do nothing |
 | `prompt` | Required when `action: send` |
@@ -195,6 +194,97 @@ Edit this plugin's `config` inside `~/.dsh/profiles/desktop/cordis.patch.yml`:
 
 Ordering comes from **counting messages already in the log**, not from the model, so it is exact.
 
+## Customizing stages
+
+Stages are data. Add one, drop one, or rename one — nothing in the pipeline
+branches on a stage id.
+
+Define `stages` and the built-in list is replaced **wholesale**:
+
+```yaml
+    stages:
+      - id: intake
+        behavior: sequence
+        label: { en: "Intake", zh: "接需求" }
+        criteria: 用户刚提出需求，agent 还在确认要做什么
+      - id: coding
+        behavior: passive
+        label: { en: "Coding", zh: "写代码" }
+        criteria: agent 正在修改代码文件
+      - id: handover
+        behavior: terminal
+        label: { en: "Handover", zh: "交接" }
+        criteria: agent 已经推送完成，或明确宣告需求结束
+
+    workspaces:
+      - path: /Users/you/project
+        enabled: true
+        rules:
+          - id: clarify
+            when: intake        # ← refers to your stage id
+            scene: 需求还不清楚
+            action: send
+            prompt: 你想改哪个页面？
+          - id: confirm
+            when: intake
+            scene: 需求已确认
+            action: stop
+          - id: done
+            when: handover
+            scene: 已完成
+            action: stop
+```
+
+### What each field needs
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | Unique. This is what a rule's `when` refers to. |
+| `behavior` | yes | One of `sequence`, `once`, `terminal`, `passive`. |
+| `label.en` / `label.zh` | yes | Shown in the panel; the client picks by UI language. |
+| `criteria` | yes | The description sent to the model. **Chinese works best** — see below. |
+
+### Two things validation enforces
+
+**At least one `terminal` stage.** Without one, a `sequence` stage that has
+fired all its rules has nowhere to hand over, so every later turn would log a
+skip and the pipeline would never settle.
+
+**Every stage needs `criteria`.** The model picks a stage by matching the
+conversation against those descriptions. A stage with vague criteria is a stage
+the model will never choose.
+
+### Writing criteria that actually work
+
+The model separates stages by the boundaries between them, not by the stage
+names. Two things measurably help:
+
+- **State what distinguishes a stage from its neighbours**, not just what it is.
+- **Write them in Chinese.** On nine scenarios from real sessions, Chinese
+  criteria scored 8/9 while English translations of the same descriptions
+  scored 5/9 and fell below the confidence floor on short replies. Cross-checks
+  showed the criteria language is what matters, not the transcript language.
+
+After adding a stage, exercise it: run a session that reaches it and check the
+log shows the new stage being picked. `judge` events carry the stage and its
+confidence.
+
+## Language
+
+Two different languages are in play, and they follow different rules.
+
+| What | Follows |
+|---|---|
+| Panel text, and the "please continue" prompt sent to the agent | **Your DSH language setting** |
+| Stage criteria (the text sent to the decision model) | **Chinese, always** |
+
+The panel reads the language from DSH settings, so it matches the rest of the
+UI without extra configuration. If you have never explicitly picked a language
+in DSH, the plugin falls back to English.
+
+The criteria stay Chinese for the reason above: the model separates stages far
+more reliably in Chinese. They are model input, not documentation.
+
 ## Confidence
 
 The model returns a probability distribution. The plugin uses a **normalized confidence**:
@@ -207,7 +297,7 @@ This maps "pure guess" to 0 and "certain" to 1.
 
 **Why normalize.** Raw `p_max` means different things at different option counts — a guess is 0.5 with two options but 0.167 with six. Without normalization, a fixed threshold drifts with the number of stages.
 
-**So the plugin always sends all six stages to the model**, never trimming to the ones you configured. Otherwise the option count varies per workspace and the same 0.5 would mean different things. Stages you have no rules for simply never get selected.
+**So the plugin always sends every defined stage to the model**, never trimming to the ones you configured. Otherwise the option count varies per workspace and the same 0.5 would mean different things. Stages you have no rules for simply never get selected.
 
 Below `confidenceFloor` (default 0.3) the plugin does nothing: it logs `uncertain` and pauses automatic advancement.
 
@@ -280,33 +370,29 @@ Messages the plugin sends carry `source.kind = "decision"`, keeping them distinc
 - they are not mistaken for human activity, so the plugin cannot suppress itself
 - the plugin counts them in the log to derive stage progress
 
-## On reminders
+## Reading the log
 
-**This plugin sends no system notifications and posts no messages into the session.**
-
-It only records state in-process. To find out when and why an agent stopped, read the log:
+The plugin sends no notifications. To find out when and why it stopped, read
+the log:
 
 ```bash
 tail -f ~/.dsh/decision-orchestrator/logs/$(date +%F).jsonl
 ```
 
-Every `ev`:
-
 | `ev` | Meaning |
 |---|---|
-| `apply` / `projection-ready` | Plugin mounted, projection ready (once per start or reload) |
+| `apply` / `projection-ready` | Plugin mounted, projection ready |
+| `locale` | UI language resolved for this process |
 | `judge` | One judgement; includes `stage`, `confidence`, `rawConfidence` |
 | `pick` | Which rule was selected; includes `stage`, `ruleId`, `progress` |
-| `halt` | **A `action: stop` rule fired; auto-advance paused**; `ruleId` says which |
-| `stop` | **Terminated by an error or the iteration limit**; `why` says why |
-| `uncertain` | Confidence too low, no judgement made |
+| `halt` | A stop rule fired; auto-advance paused. `ruleId` says which |
+| `stop` | Terminated by an error or the iteration limit. `why` says why |
+| `uncertain` | Confidence below the floor, no judgement made |
 | `send` | A prompt was sent; includes `ruleId`, `iterations` |
 | `send-fail` | Send failed; includes `err` |
-| `skip` | Held back, no action; `why` explains (arbitration, awaiting state, empty input, …) |
-| `error` | One execution failed but below the termination threshold; includes `code`, `failures` |
+| `skip` | Held back, no action. `why` explains (arbitration, paused, empty input, …) |
+| `error` | One execution failed but below the termination threshold |
 | `retry` | Re-sent "please continue" after a network interruption |
-
-**Why no system notifications.** The plugin runs in DSH's pure Node process (`ELECTRON_RUN_AS_NODE=1`) and cannot reach Electron's `Notification`. Falling back to `osascript` makes macOS attribute the notification to Script Editor — wrong icon, and clicking it opens that app. Better to have no reminder than a misleading one.
 
 ## Tests
 

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Decision orchestrator",
+    "description": "Let a local decision model judge what the agent should do after each turn, then follow the rules you configured."
+  }
+}

@@ -26,22 +26,52 @@ window.__ModuleLoader__.load({
 
     const PROJECTION_KEY = "decision-orchestrator"
 
-    const ACTION_TEXT = {
-      send: "自动发送提示词",
-      stop: "停下来等你",
-      silent: "不做任何动作",
-    }
+    /**
+     * Panel strings.
+     *
+     * Registered as one namespace so the panel follows the DSH language setting
+     * like any host component; nothing here is hardcoded per locale.
+     */
+    const NS = "decision-orchestrator"
 
-    /** Localized stage names used as group headings. */
-    const STAGE_TEXT = {
-      planning: "方案阶段",
-      implementing: "改代码中",
-      selfchecking: "自检阶段",
-      waiting: "等你决定",
-      finished: "已完成",
-      conflict: "有冲突",
+    const DICT = {
+      zh: {
+        "menu.label": "决策规则…",
+        "panel.title": "决策规则",
+        "panel.close": "关闭",
+        "action.send": "自动发送提示词",
+        "action.stop": "停下来等你",
+        "action.silent": "不做任何动作",
+        "stage.unknown": "阶段未识别",
+        "rule.noId": "(无 id)",
+        "rule.stopPrefix": "停下：",
+        "status.enabled": "已启用",
+        "status.disabled": "未启用",
+        "meta.noSession": "此工作区尚无会话，规则状态需先建一个会话才可见",
+        "empty.noRules": "尚未配置规则",
+        "empty.notEnabled": "此工作区未启用决策编排",
+        "hint.title": "如何修改",
+        "hint.body": "编辑 cordis.patch.yml 中本插件的 config，改完重启 DSH 生效。",
+      },
+      en: {
+        "menu.label": "Decision rules…",
+        "panel.title": "Decision rules",
+        "panel.close": "Close",
+        "action.send": "Send prompt automatically",
+        "action.stop": "Stop and wait for you",
+        "action.silent": "Do nothing",
+        "stage.unknown": "Unrecognized stage",
+        "rule.noId": "(no id)",
+        "rule.stopPrefix": "Stops: ",
+        "status.enabled": "Enabled",
+        "status.disabled": "Not enabled",
+        "meta.noSession": "No session in this workspace yet — rule state appears once one exists",
+        "empty.noRules": "No rules configured yet",
+        "empty.notEnabled": "Decision orchestration is not enabled for this workspace",
+        "hint.title": "How to change these",
+        "hint.body": "Edit this plugin's config in cordis.patch.yml, then restart DSH.",
+      },
     }
-    const STAGE_ORDER = ["planning", "implementing", "selfchecking", "waiting", "finished", "conflict"]
 
     /**
      * Read the rules this plugin projected for that workspace.
@@ -106,19 +136,28 @@ window.__ModuleLoader__.load({
 .do-hint code{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));padding:1px 5px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 `
 
+    /** Stage label for the active language, falling back to the raw id. */
+    function stageLabel(stage, locale) {
+      return stage?.label?.[locale] ?? stage?.label?.en ?? stage?.id ?? ""
+    }
+
     /**
      * Render rules grouped by stage.
      *
-     * Unknown stages get their own group instead of being silently folded into
-     * a known one: a typo in `when` should be visible, not quietly relocated.
+     * Stage order and names come from the projection, so user-defined stages
+     * appear the same way built-in ones do. A rule pointing at a stage that is
+     * not defined gets its own group instead of being silently folded into a
+     * known one: a typo in `when` should be visible, not quietly relocated.
      */
-    function renderStages(rules) {
+    function renderStages(rules, stages, t, locale) {
       const list = Array.isArray(rules) ? rules : []
+      const order = Array.isArray(stages) ? stages : []
+      const known = new Set(order.map((s) => s.id))
       const byStage = new Map()
       const unknown = []
       for (const r of list) {
         const st = r?.when
-        if (STAGE_ORDER.includes(st)) {
+        if (known.has(st)) {
           if (!byStage.has(st)) byStage.set(st, [])
           byStage.get(st).push(r)
         } else {
@@ -127,41 +166,41 @@ window.__ModuleLoader__.load({
       }
 
       const out = []
-      for (const st of STAGE_ORDER) {
-        const group = byStage.get(st)
+      for (const stage of order) {
+        const group = byStage.get(stage.id)
         if (!group || group.length === 0) continue
-        out.push(h("div", { className: "do-stage", key: st }, STAGE_TEXT[st] ?? st))
-        for (const r of group) out.push(renderRule(r))
+        out.push(h("div", { className: "do-stage", key: stage.id }, stageLabel(stage, locale)))
+        for (const r of group) out.push(renderRule(r, t))
       }
       if (unknown.length > 0) {
-        out.push(h("div", { className: "do-stage do-stage-unknown", key: "__unknown" }, "阶段未识别"))
-        for (const r of unknown) out.push(renderRule(r))
+        out.push(h("div", { className: "do-stage do-stage-unknown", key: "__unknown" }, t("stage.unknown")))
+        for (const r of unknown) out.push(renderRule(r, t))
       }
       return out
     }
 
-    function renderRule(r) {
+    function renderRule(r, t) {
       return h(
         "div",
         { className: "do-rule", key: r.id },
         h(
           "div",
           { className: "do-rule-head" },
-          h("code", { className: "do-rule-id" }, r.id ?? "(无 id)"),
-          h("span", { className: "do-rule-action" }, ACTION_TEXT[r.action] ?? r.action),
+          h("code", { className: "do-rule-id" }, r.id ?? t("rule.noId")),
+          h("span", { className: "do-rule-action" }, t(`action.${r.action}`)),
         ),
         h("div", { className: "do-rule-scene" }, r.scene ?? ""),
         r.action === "send" && r.prompt
           ? h("div", { className: "do-rule-prompt" }, `\u2192 ${r.prompt}`)
           : null,
         r.action === "stop" && r.notifyText
-          ? h("div", { className: "do-rule-prompt" }, `\u2192 停下：${r.notifyText}`)
+          ? h("div", { className: "do-rule-prompt" }, `\u2192 ${t("rule.stopPrefix")}${r.notifyText}`)
           : null,
       )
     }
 
     /** Read-only rules panel. */
-    function RulesPanel({ info, onClose }) {
+    function RulesPanel({ info, onClose, t, locale }) {
       useEffect(() => {
         const onKey = (e) => { if (e.key === "Escape") onClose() }
         window.addEventListener("keydown", onKey)
@@ -169,6 +208,7 @@ window.__ModuleLoader__.load({
       }, [onClose])
 
       const rules = info?.rules ?? []
+      const stages = info?.stages ?? []
       const enabled = info?.enabled === true
 
       return h(
@@ -180,12 +220,12 @@ window.__ModuleLoader__.load({
         },
         h(
           "div",
-          { className: "do-panel", role: "dialog", "aria-modal": "true", "aria-label": "决策规则" },
+          { className: "do-panel", role: "dialog", "aria-modal": "true", "aria-label": t("panel.title") },
           h(
             "div",
             { className: "do-header" },
-            h("div", { className: "do-title" }, `决策规则 · ${info?.displayTitle ?? "工作区"}`),
-            h("button", { className: "do-close", onClick: onClose, "aria-label": "关闭" }, "\u2715"),
+            h("div", { className: "do-title" }, `${t("panel.title")} · ${info?.displayTitle ?? ""}`),
+            h("button", { className: "do-close", onClick: onClose, "aria-label": t("panel.close") }, "\u2715"),
           ),
 
           h(
@@ -194,31 +234,25 @@ window.__ModuleLoader__.load({
             h(
               "span",
               { className: enabled ? "do-badge do-badge-on" : "do-badge do-badge-off" },
-              enabled ? "已启用" : "未启用",
+              enabled ? t("status.enabled") : t("status.disabled"),
             ),
             info?.hasSession === false
-              ? h("span", { className: "do-meta do-warn" }, "此工作区尚无会话，规则状态需先建一个会话才可见")
+              ? h("span", { className: "do-meta do-warn" }, t("meta.noSession"))
               : null,
           ),
 
           rules.length === 0
-            ? h("div", { className: "do-empty" }, enabled ? "尚未配置规则" : "此工作区未启用决策编排")
-            : h("div", { className: "do-rules" }, ...renderStages(rules)),
+            ? h("div", { className: "do-empty" }, enabled ? t("empty.noRules") : t("empty.notEnabled"))
+            : h("div", { className: "do-rules" }, ...renderStages(rules, stages, t, locale)),
 
           h(
             "div",
             { className: "do-hint" },
-            h("div", { className: "do-hint-title" }, "如何修改"),
+            h("div", { className: "do-hint-title" }, t("hint.title")),
             h(
               "div",
               { className: "do-hint-body" },
-              "编辑 ",
-              h("code", null, "~/.dsh/profiles/desktop/cordis.patch.yml"),
-              " 中 ",
-              h("code", null, "decision-orchestrator"),
-              " 行的 ",
-              h("code", null, "config.workspaces"),
-              "，改完重启 DSH 生效。",
+              t("hint.body"),
             ),
           ),
         ),
@@ -228,14 +262,31 @@ window.__ModuleLoader__.load({
     /** Open/close state provided by ctx (module-level; one instance suffices). */
     let setInfo = null
 
-    function PanelHost() {
-      const [info, setState] = useState(null)
-      setInfo = setState
-      if (info === null) return null
-      return h(RulesPanel, { info, onClose: () => setState(null) })
+    /** Component handed to the slot, closed over the resolved language. */
+    function makePanelHost(t, locale) {
+      return function PanelHost() {
+        const [info, setState] = useState(null)
+        setInfo = setState
+        if (info === null) return null
+        return h(RulesPanel, { info, onClose: () => setState(null), t, locale })
+      }
     }
 
     function applyClient(ctx) {
+      // ── Panel strings follow the DSH language setting ──
+      // Fetched rather than injected: a host without the locale service still
+      // renders the panel, just with the fallback dictionary below.
+      let locale = "en"
+      let localeSvc
+      try {
+        localeSvc = ctx.get?.("locale")
+        for (const [id, dict] of Object.entries(DICT)) localeSvc?.register?.(NS, id, dict)
+        locale = localeSvc?.getLocale?.()?.active ?? "en"
+      } catch { /* keep defaults */ }
+
+      const activeDict = DICT[locale] ?? DICT[locale?.startsWith?.("zh") ? "zh" : "en"] ?? DICT.en
+      const t = (key) => activeDict[key] ?? DICT.en[key] ?? key
+
       // Inject styles
       try {
         if (typeof document !== "undefined" && !document.getElementById("do-style")) {
@@ -256,7 +307,7 @@ window.__ModuleLoader__.load({
             resolve: ({ workspaceId, displayTitle }) => [
               {
                 id: "rules",
-                label: "决策规则\u2026",
+                label: t("menu.label"),
                 run: () => {
                   const found = readProjection(ctx, workspaceId)
                   const view = found?.view
@@ -266,6 +317,7 @@ window.__ModuleLoader__.load({
                       displayTitle,
                       enabled: view?.enabled === true,
                       rules: Array.isArray(view?.rules) ? view.rules : [],
+                      stages: Array.isArray(view?.stages) ? view.stages : [],
                       hasSession: found !== undefined,
                     })
                   }
@@ -285,7 +337,7 @@ window.__ModuleLoader__.load({
             id: "decision-orchestrator.rules",
             inject: () => ({}),
           },
-          PanelHost,
+          makePanelHost(t, locale),
         )
       })
     }

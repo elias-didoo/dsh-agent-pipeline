@@ -14,12 +14,14 @@
   ],
   "exports": {
     ".": "./host.js",
-    "./client": "./client.js"
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "host.js",
     "client.js",
-    "lib"
+    "lib",
+    "locale/*.json"
   ],
   "scripts": {
     "test": "node test/all.mjs",
