@@ -491,15 +491,21 @@ await t("the close button closes it", () => {
   assert(m.registered.overlay() === null, "still visible")
 })
 
-await t("a workspace whose sessions carry no projection says so", () => {
-  // The panel reads the view from a session of that workspace. With none, the
-  // panel must explain that rather than render an empty box.
+await t("a workspace with no sessions asks for one", () => {
   const m = mount({ view: rulesView() })
-  const before = m.registered.overlay
-  m.ctx.sessions.list.getSnapshot = () => ({ byId: {}, allIds: [] })
+  m.ctx.workspaces.list.getSnapshot = () => ({ items: [{ workspaceId: "w1", sessionIds: [] }] })
   const body = render(kids(openPanel(m))[1])
   assert(textOf(body).includes("打开一个会话"), `note=${textOf(body)}`)
-  void before
+})
+
+await t("a workspace whose sessions carry no projection says they have not loaded", () => {
+  // "No session" and "a session that has not been opened since load" are
+  // different states and need different wording; one blanket message would send
+  // the user looking for a missing session that is right there.
+  const m = mount({ view: rulesView() })
+  m.ctx.sessions.list.getSnapshot = () => ({ byId: {}, allIds: [] })
+  const body = render(kids(openPanel(m))[1])
+  assert(textOf(body).includes("还没载入"), `note=${textOf(body)}`)
 })
 
 await t("a workspace the plugin is off for shows the off state", () => {

@@ -49,6 +49,7 @@ window.__ModuleLoader__.load({
         "rules.steps": "{n} 步",
         "rules.empty": "这个工作区没有开启 agent-pipeline。",
         "rules.noSession": "先在这个工作区打开一个会话，才能读到它的流程。",
+        "rules.notLoaded": "这个工作区的会话还没载入流程信息，切到该工作区的会话后再试。",
         "rules.elsewhere": "改流程请编辑 profile 里的 cordis.patch.yml。",
       },
       en: {
@@ -71,6 +72,7 @@ window.__ModuleLoader__.load({
         "rules.steps": "{n} steps",
         "rules.empty": "agent-pipeline is not enabled for this workspace.",
         "rules.noSession": "Open a session in this workspace to read its flows.",
+        "rules.notLoaded": "This workspace's sessions have not loaded their flows yet; open one of them and try again.",
         "rules.elsewhere": "To change a flow, edit cordis.patch.yml in the profile.",
       },
     }
@@ -410,12 +412,17 @@ window.__ModuleLoader__.load({
           const byId = ctx.sessions?.list?.getSnapshot?.()?.byId ?? {}
           const items = ctx.workspaces?.list?.getSnapshot?.()?.items ?? []
           const ws = items.find((i) => i.workspaceId === workspaceId)
-          for (const id of ws?.sessionIds ?? []) {
+          const ids = ws?.sessionIds ?? []
+          for (const id of ids) {
             const v = byId[id]?.projectionValues?.[PROJECTION_KEY]
-            if (v) return v
+            if (v) return { view: v }
           }
-        } catch { /* a host without these services simply shows nothing */ }
-        return undefined
+          // Two ways to have nothing: no session at all, or sessions that have
+          // not been opened since the plugin loaded. They need different words.
+          return { note: ids.length === 0 ? "rules.noSession" : "rules.notLoaded" }
+        } catch {
+          return { note: "rules.noSession" }
+        }
       }
 
       // ── The workspace menu entry ──
@@ -453,16 +460,15 @@ window.__ModuleLoader__.load({
             const target = rulesTarget
             if (!target) return null
 
-            const view = definitionFor(target.workspaceId)
+            const found = definitionFor(target.workspaceId)
+            const view = found.view
             return h(RulesPanel, {
               t: makeT(activeLocale),
               locale: activeLocale(),
               where: target.displayTitle ?? target.title ?? "",
               spec: view?.definition ?? null,
               enabled: view?.enabled === true,
-              // No projection yet: the workspace has no session carrying one, so
-              // say that instead of rendering an empty panel with no reason.
-              note: view === undefined ? "rules.noSession" : null,
+              note: found.note ?? null,
               onClose: () => setRulesTarget(null),
             })
           },

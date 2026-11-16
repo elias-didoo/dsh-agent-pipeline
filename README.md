@@ -163,6 +163,15 @@ done rather than claiming it was.
 Configuration is validated at load. A broken reference fails loudly instead of
 running until it reaches the bad step and stopping in a state nobody planned.
 
+## Reading the flows
+
+Right-click a workspace and pick **Agent flows…**. A read-only panel lists every
+flow with its steps, each step's full prompt, and where each branch leads — plus
+whether the plugin is on for that workspace.
+
+It is read-only on purpose: the config is the single source of truth, and the
+panel's footer says which file to edit.
+
 ## Starting a flow
 
 Two ways in, one implementation.
@@ -170,14 +179,13 @@ Two ways in, one implementation.
 **`/flow`** — type it yourself, the same way `/goal` works:
 
 ```
-/flow                    what the pipelines are, step by step
 /flow requirement        start that one
 /flow pause|resume|cancel  steer the running one
 ```
 
-`/flow` with no argument prints every flow's steps with their full prompts and
-where each branch leads. That listing is the only place to read the pipeline
-without opening the config; the config is still the only place to change it.
+`/flow` starts and steers; it does not print the rules. A command that declares
+an argument is always intercepted for one, so a bare `/flow` never reaches the
+handler — reading them is the menu's job.
 
 **`start_flow`** — the agent calls it, the same mechanism as `create_goal` or
 `todo_write`. You ask in words; the agent turns that into the call:
