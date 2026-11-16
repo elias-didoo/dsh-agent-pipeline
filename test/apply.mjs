@@ -380,6 +380,31 @@ await t("a flows value that is neither a list nor a map is still rejected", () =
   assert(r.issues?.some((i) => /flows must be a list or a map/.test(i.message)), "should reject a scalar")
 })
 
+await t("apply registers flows when handed the schema's own output", async () => {
+  // The exact load path: Cordis validates with Config, then calls apply with
+  // `result.value`. Testing validate() alone misses the failure that made the
+  // plugin inert, because the rejection happened inside apply, after the schema
+  // had already rewritten flows into the shape apply used to refuse.
+  const raw = {
+    workspaces: [{
+      path: "/tmp/dsh-decision-orchestrator-test-workspace",
+      enabled: true,
+      steps: [{ id: "plan", do: "send", prompt: "p1" }, { id: "wait", do: "stop" }],
+      flows: [{ name: "demo", steps: ["plan", "wait"] }],
+    }],
+  }
+  const resolved = Config["~standard"].validate(raw)
+  assert(!resolved.issues, `schema refused it: ${resolved.issues?.[0]?.message}`)
+
+  const ctx2 = ctxWithRecording()
+  const before = registeredTools.length
+  host.apply(ctx2, resolved.value)
+  const added = registeredTools.slice(before)
+  assert(added.length === 1, `apply registered ${added.length} tools, expected 1`)
+  assert(added[0].parameters.properties.flow.enum.join(",") === "demo",
+    `flows lost: ${JSON.stringify(added[0].parameters.properties.flow.enum)}`)
+})
+
 console.log("\n=== 5. The two entry points the panel and the agent use ===")
 
 await t("the plugin registers exactly one tool, start_flow", () => {
