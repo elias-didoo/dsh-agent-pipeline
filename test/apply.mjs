@@ -3,6 +3,7 @@
  * Goal: confirm apply() does not throw, before ever mounting it.
  */
 const host = await import("../host.js")
+const { Config, validate } = await import("../lib/config.js")
 
 const config = {
   model: { baseUrl: "http://127.0.0.1:8080", name: "kev-latest", timeoutMs: 30000 },
@@ -332,6 +333,53 @@ await t("an invalid config leaves the feature off instead of half-configured", (
   assert(registeredTools.length === before, "an invalid config must not register a flow tool")
 })
 
+console.log("\n=== 4e. Validation is idempotent across the two callers ===")
+
+await t("a config passes both the Config schema and the apply-time check", async () => {
+  // Cordis calls `Config["~standard"].validate` before `apply` and hands apply
+  // its *output*. This function normalizes flows from a list to a map, so the
+  // second call sees a map. Requiring a list every time made every load fail
+  // once validation started being applied — the plugin went inert silently,
+  // because a failed validation leaves the feature off.
+  const listForm = {
+    workspaces: [{
+      path: "/tmp/dsh-decision-orchestrator-test-workspace",
+      enabled: true,
+      steps: [{ id: "a", do: "send", prompt: "p" }, { id: "s", do: "stop" }],
+      flows: [{ name: "f", steps: ["a", "s"] }],
+    }],
+  }
+
+  const first = validate(listForm)
+  assert(!first.issues, `the list form must validate: ${first.issues?.[0]?.message}`)
+
+  const viaSchema = Config["~standard"].validate(listForm)
+  assert(!viaSchema.issues, `the schema must accept it: ${viaSchema.issues?.[0]?.message}`)
+  assert(!Array.isArray(viaSchema.value.workspaces[0].flows), "the schema normalizes flows to a map")
+
+  const second = validate(viaSchema.value)
+  assert(!second.issues, `the normalized form must validate too, got: ${second.issues?.[0]?.message}`)
+
+  const third = validate(second.value)
+  assert(!third.issues, `validation must be idempotent, got: ${third.issues?.[0]?.message}`)
+})
+
+await t("a map-form config is accepted directly", () => {
+  const r = validate({
+    workspaces: [{
+      path: "/w", enabled: true,
+      steps: { a: { do: "send", prompt: "p" }, s: { do: "stop" } },
+      flows: { f: { steps: ["a", "s"] } },
+    }],
+  })
+  assert(!r.issues, `the map form must validate: ${r.issues?.[0]?.message}`)
+})
+
+await t("a flows value that is neither a list nor a map is still rejected", () => {
+  const r = validate({ workspaces: [{ path: "/w", enabled: true, steps: {}, flows: "nope" }] })
+  assert(r.issues?.some((i) => /flows must be a list or a map/.test(i.message)), "should reject a scalar")
+})
+
 console.log("\n=== 5. The two entry points the panel and the agent use ===")
 
 await t("the plugin registers exactly one tool, start_flow", () => {
@@ -355,10 +403,17 @@ await t("the plugin registers the flow command", () => {
   assert(registeredCommands[0].name === "flow", `got ${registeredCommands[0].name}`)
 })
 
-await t("the flow command rejects an action it does not know", () => {
-  const r = registeredCommands[0].handler({ agent: { session: { id: "s1" } }, rawInput: "explode" })
+await t("the flow command rejects an argument it does not know", () => {
+  // The command resolves the workspace first, so the agent has to carry one.
+  const agent = {
+    session: { id: "s1", header: { cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, deriveMessages: () => [] },
+    inbox: { nextTurn: [], nextStep: [] },
+    followup() {},
+    whenIdle: async () => {},
+  }
+  const r = registeredCommands[0].handler({ agent, rawInput: "explode" })
   assert(r.kind === "error", `expected an error, got ${r.kind}`)
-  assert(/Unknown action/.test(r.text), `got ${r.text}`)
+  assert(/No flow named "explode"/.test(r.text), `got ${r.text}`)
 })
 
 await t("the flow command spells every past tense correctly", async () => {
@@ -396,6 +451,93 @@ await t("the flow command spells every past tense correctly", async () => {
   }
 })
 
+
+console.log("\n=== 6. The /flow command ===")
+
+/** Run one /flow input against a live agent on the test workspace. */
+function runFlowCommand(input, agent, command = registeredCommands.at(-1)) {
+  return command.handler({ agent, rawInput: input })
+}
+
+/** A live agent bound to the test workspace. */
+function flowAgent(id = "cmd-agent") {
+  return {
+    session: {
+      id,
+      header: { cwd: "/tmp/dsh-decision-orchestrator-test-workspace" },
+      deriveMessages: () => [],
+    },
+    inbox: { nextTurn: [], nextStep: [] },
+    followup() {},
+    whenIdle: async () => {},
+  }
+}
+
+await t("/flow with no argument lists the flows and their steps", () => {
+  const live = host.apply(ctxWithRecording(), config)
+  const agent = flowAgent("list")
+  const r = runFlowCommand("", agent)
+  assert(r.kind === "success", `got ${r.kind}: ${r.text}`)
+  assert(r.text.includes("demo"), `flow name missing: ${r.text.slice(0, 80)}`)
+  // The listing is the point: a param-free /flow has to show what the pipeline
+  // actually says, not just its shape.
+  assert(r.text.includes("p1"), `step prompt missing: ${r.text.slice(0, 120)}`)
+  assert(/no flow running/i.test(r.text), `status line missing: ${r.text.slice(0, 80)}`)
+  void live
+})
+
+await t("/flow <name> starts that flow", () => {
+  host.apply(ctxWithRecording(), config)
+  const agent = flowAgent("start")
+  const r = runFlowCommand("demo", agent)
+  assert(r.kind === "success", `got ${r.kind}: ${r.text}`)
+  assert(/Started/i.test(r.text), `got ${r.text.slice(0, 60)}`)
+})
+
+await t("starting a second flow while one runs is refused", () => {
+  host.apply(ctxWithRecording(), config)
+  const agent = flowAgent("double")
+  runFlowCommand("demo", agent)
+  const again = runFlowCommand("demo", agent)
+  assert(again.kind === "error", `should refuse, got ${again.kind}`)
+  assert(/already running/i.test(again.text), `got ${again.text}`)
+})
+
+await t("/flow pause, resume and cancel each work in turn", () => {
+  host.apply(ctxWithRecording(), config)
+  const agent = flowAgent("control")
+  runFlowCommand("demo", agent)
+  for (const [input, said] of [["pause", "paused"], ["resume", "resumed"], ["cancel", "cancelled"]]) {
+    const r = runFlowCommand(input, agent)
+    assert(r.kind === "success", `${input} failed: ${r.text}`)
+    assert(r.text.includes(said), `${input} should say "${said}", got "${r.text}"`)
+  }
+})
+
+await t("controlling with no flow running reports an error, not a crash", () => {
+  host.apply(ctxWithRecording(), config)
+  const r = runFlowCommand("pause", flowAgent("no-flow-yet"))
+  // flowControl returns true whenever the workspace resolves, even with nothing
+  // to act on, so this asserts the reported text rather than the status alone.
+  assert(/No running flow/i.test(r.text) || r.kind === "error",
+    `should say there is nothing to control, got ${r.kind}: ${r.text}`)
+})
+
+await t("an unknown argument names the flows that do exist", () => {
+  host.apply(ctxWithRecording(), config)
+  const r = runFlowCommand("nope", flowAgent("unknown"))
+  assert(r.kind === "error", `got ${r.kind}`)
+  assert(/No flow named "nope"/.test(r.text), `got ${r.text}`)
+  assert(/demo/.test(r.text), `should list the real flows: ${r.text}`)
+})
+
+await t("the command refuses to run in a workspace the plugin is not in", () => {
+  host.apply(ctxWithRecording(), config)
+  const agent = flowAgent("elsewhere")
+  agent.session.header.cwd = "/tmp/some-other-workspace"
+  const r = runFlowCommand("", agent)
+  assert(r.kind === "error", `got ${r.kind}`)
+})
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail?1:0)

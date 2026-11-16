@@ -165,16 +165,32 @@ running until it reaches the bad step and stopping in a state nobody planned.
 
 ## Starting a flow
 
-The agent starts a flow by calling the `start_flow` tool — the same mechanism as
-`create_goal` or `todo_write`. You ask in words; the agent turns that into the
-call.
+Two ways in, one implementation.
+
+**`/flow`** — type it yourself, the same way `/goal` works:
+
+```
+/flow                    what the pipelines are, step by step
+/flow requirement        start that one
+/flow pause|resume|cancel  steer the running one
+```
+
+`/flow` with no argument prints every flow's steps with their full prompts and
+where each branch leads. That listing is the only place to read the pipeline
+without opening the config; the config is still the only place to change it.
+
+**`start_flow`** — the agent calls it, the same mechanism as `create_goal` or
+`todo_write`. You ask in words; the agent turns that into the call:
 
 ```
 you: 评估如下需求，仅评估，不要动仓库：xxx
 agent → start_flow({ flow: "requirement" })
 ```
 
-Pause, resume and cancel are panel controls, not tools. An agent that could park
+Both routes call the same host method, so they cannot diverge.
+
+Starting and pausing are separated on purpose: starting is offered to both
+callers, but pause, resume and cancel are user-only. An agent that could park
 its own pipeline could also quietly skip its self-check.
 
 ## Language

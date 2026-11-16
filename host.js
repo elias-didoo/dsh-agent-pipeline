@@ -9,10 +9,10 @@
  */
 
 import { resolveUiLocale } from "./lib/host-locale.js"
-import { Config, validate, validateConfig } from "./lib/config.js"
-import { handleTurnEnd, beginFlow, controlFlow } from "./lib/core.js"
+import { Config, effectiveConfig, validate, validateConfig } from "./lib/config.js"
+import { handleTurnEnd, beginFlow, controlFlow, flowView } from "./lib/core.js"
 import { registerFlowTools } from "./lib/flow-tools.js"
-import { effectiveConfig } from "./lib/config.js"
+import { describeAllFlows, describeFlow, flowNames } from "./lib/flow-spec.js"
 import { SerialQueue } from "./lib/judge.js"
 import { log } from "./lib/log.js"
 
@@ -278,6 +278,9 @@ export function apply(ctx, config) {
   function flowControl(session, action) {
     const cfg = effectiveConfig(config, session?.header?.cwd)
     if (!cfg) return false
+    // Nothing to control: without this the command reported "paused" for a
+    // session that never started a pipeline.
+    if (!currentState(session)?.flow?.name) return false
     let messages = []
     try {
       messages = typeof session?.deriveMessages === "function" ? session.deriveMessages() : []
@@ -327,31 +330,89 @@ export function apply(ctx, config) {
     log({ ev: "tools-fail", err: String(e?.message ?? e) })
   }
 
-  // ── Panel commands ──
-  // pause/resume/cancel are user-only actions, so they are commands rather than
-  // tools: the agent could otherwise park its own pipeline and skip a
-  // self-check. The panel reaches them through `ctx.remote.commands.execute()`.
+  /**
+   * The `/flow` listing: where the running pipeline is, then every flow's
+   * definition.
+   *
+   * Rendering lives in flow-spec so it can be tested without a host; this only
+   * gathers what it needs.
+   */
+  function renderStatus(session, cfg, spec, names, zh) {
+    let running
+    try {
+      running = flowView({ rt: currentState(session), cfg, messages: session?.deriveMessages?.() ?? [], locale: zh ? "zh" : "en" })
+    } catch { /* a session that cannot derive messages simply has no status */ }
+    const head = running
+      ? (zh ? `当前：${running.label} ${running.done}/${running.total}（${running.status}）` : `Current: ${running.label} ${running.done}/${running.total} (${running.status})`)
+      : (zh ? "当前：没有运行中的流程" : "Current: no flow running")
+    const usage = zh
+      ? `用法：/flow ${names.join(" | ")}（启动）| /flow pause|resume|cancel（控制）`
+      : `Usage: /flow ${names.join(" | ")} (start) | /flow pause|resume|cancel (control)`
+    return [head, "", describeAllFlows(spec, zh ? "zh" : "en", running), "", usage].join("\n")
+  }
+
+  // ── The /flow command ──
+  // One command, like `/goal`: no argument shows the pipeline, a flow name
+  // starts it, and the control words steer a running one. Control is
+  // user-only — an agent that could park its own pipeline could also skip a
+  // self-check — but starting is offered to both callers, and it shares
+  // beginFlow with the `start_flow` tool so the two cannot diverge.
+  const CONTROL_WORDS = ["pause", "resume", "cancel"]
   let disposeCommands = () => {}
   try {
     const commands = ctx.get?.("commands")
     if (configValid && commands && typeof commands.register === "function") {
       disposeCommands = commands.register({
         name: "flow",
-        description: "Control the running review flow: pause, resume or cancel.",
-        input: { hint: "pause | resume | cancel" },
+        description: "Show this workspace's pipelines, start one, or control the running one.",
+        input: { hint: `${allFlowNames.join(" | ")} | pause | resume | cancel` },
         handler: ({ agent, rawInput }) => {
-          const action = String(rawInput ?? "").trim()
-          if (!["pause", "resume", "cancel"].includes(action)) {
-            return { kind: "error", text: `Unknown action "${action}". Use pause, resume or cancel.` }
-          }
           const session = agent?.session
-          const ok = flowControl(session, action)
-          // Past tenses are spelled out rather than built from the action:
-          // "cancel" + "d" is "canceld".
-          const said = { pause: "paused", resume: "resumed", cancel: "cancelled" }[action]
-          return ok
-            ? { kind: "success", text: `Flow ${said}.` }
-            : { kind: "error", text: "No running flow to control." }
+          const cfg = session ? effectiveConfig(config, session.header?.cwd) : null
+          const arg = String(rawInput ?? "").trim()
+          const zh = (config.locale ?? "en") === "zh"
+          if (!cfg) {
+            return { kind: "error", text: zh ? "这个工作区没有启用 agent-pipeline。" : "agent-pipeline is not enabled for this workspace." }
+          }
+          const spec = { steps: cfg.steps ?? {}, flows: cfg.flows ?? {} }
+          const names = flowNames(spec)
+
+          // Showing is the empty case, so `/flow` reads as "what is this?".
+          if (arg === "") return { kind: "success", text: renderStatus(session, cfg, spec, names, zh) }
+
+          // Control words win over flow names: they are a closed set, and a
+          // flow that happens to share one would be unreachable rather than
+          // silently swapped.
+          if (CONTROL_WORDS.includes(arg)) {
+            const ok = flowControl(session, arg)
+            const said = { pause: "paused", resume: "resumed", cancel: "cancelled" }[arg]
+            return ok
+              ? { kind: "success", text: zh ? `流程已${{ pause: "暂停", resume: "继续", cancel: "取消" }[arg]}。` : `Flow ${said}.` }
+              : { kind: "error", text: zh ? "现在没有运行中的流程。" : "No running flow to control." }
+          }
+
+          if (!names.includes(arg)) {
+            const usage = zh
+              ? `用法：/flow（查看）| /flow ${names.join(" | ")}（启动）| /flow pause|resume|cancel（控制）`
+              : `Usage: /flow (show) | /flow ${names.join(" | ")} (start) | /flow pause|resume|cancel (control)`
+            return { kind: "error", text: (zh ? `没有叫 "${arg}" 的流程。\n` : `No flow named "${arg}".\n`) + usage }
+          }
+
+          const running = currentState(session)?.flow
+          if (running?.name === arg && running.status === "active") {
+            return { kind: "error", text: zh ? `「${arg}」已经在跑了。` : `The ${arg} flow is already running.` }
+          }
+          const rt = { ...currentState(session) }
+          const started = beginFlow({ flowName: arg, cfg, rt, mutate: (next) => mutate(session, next) })
+          if (!started) {
+            return { kind: "error", text: zh ? `无法启动「${arg}」。` : `Could not start the ${arg} flow.` }
+          }
+          log({ ev: "flow-start", sessionId: session?.id, flow: arg, via: "command" })
+          return {
+            kind: "success",
+            text: (zh ? `已启动「${arg}」，共 ${started.steps.length} 步。` : `Started the ${arg} flow (${started.steps.length} steps).`)
+              + "\n\n" + describeFlow(spec, arg, zh ? "zh" : "en", { stepId: started.steps[0]?.id, done: 0, total: started.steps.length }),
+          }
         },
       })
       log({ ev: "commands-registered", name: "flow" })
