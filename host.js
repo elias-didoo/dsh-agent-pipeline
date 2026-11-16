@@ -17,7 +17,12 @@ import { SerialQueue } from "./lib/judge.js"
 import { log } from "./lib/log.js"
 
 export const name = "dsh-agent-pipeline"
-export const inject = ["agents", "sessions", "goals", "schedule", "sessionProjections", "tokenMeter"]
+// Services this plugin actually reads. `tokenMeter` used to be here and is not
+// any more: the context budget is priced by this plugin (see estimateTokens for
+// why the host's meter is not trusted). A declared service is a hard
+// prerequisite — a profile without it leaves the plugin inactive — so keeping
+// one that is never read would block loading for nothing.
+export const inject = ["agents", "sessions", "goals", "schedule", "sessionProjections"]
 export { Config }
 
 /** Projection unit definition. */

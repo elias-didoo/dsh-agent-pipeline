@@ -8,7 +8,7 @@
  * Run: node test/contracts.mjs
  */
 
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -184,6 +184,29 @@ await t('source.kind is not "plugin"', () => {
 await t('source.kind = "decision"', () => has(arbiterSrc, /PLUGIN_SOURCE_KIND\s*=\s*"decision"/, "kind should be decision"))
 await t("uses the local createUserMessage", () => has(actionSrc, /from\s+"\.\/message\.js"/, "should use the local message.js"))
 await t("waits for durability after sending", () => has(actionSrc, /await ctx\.sessions\.flush\(/, "missing sessions.flush"))
+
+console.log("\n=== 5e. Declared injections are actually read ===")
+
+await t("every service in inject is referenced by the code", () => {
+  // A declared service is a hard prerequisite: a profile without it leaves the
+  // plugin inactive. One that is never read therefore blocks loading for
+  // nothing — `tokenMeter` sat here for two releases after the budget stopped
+  // using it.
+  const src = ["host.js", "client.js"]
+    .map((f) => readFileSync(join(ROOT, f), "utf8"))
+    .concat(readdirSync(join(ROOT, "lib"))
+      .filter((f) => f.endsWith(".js"))
+      .map((f) => readFileSync(join(ROOT, "lib", f), "utf8")))
+    .join("\n")
+  // Strip comments: a name mentioned in prose is not a use.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1")
+  const decl = /export const inject = \[([^\]]+)\]/.exec(code)
+  assert(decl, "inject declaration not found")
+  const declared = decl[1].split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+  assert(declared.length > 0, "inject is empty")
+  const unread = declared.filter((svc) => !new RegExp(`\\.${svc}\\b|ctx\\.get\\(["']${svc}["']\\)`).test(code))
+  assert(unread.length === 0, `declared but never read: ${unread.join(", ")}`)
+})
 
 console.log("\n=== 6. Zero external dependencies ===")
 await t("does not import @deepseek-ai/*", () => {
