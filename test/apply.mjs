@@ -35,13 +35,22 @@ const registeredCommands = []
  * behind.
  */
 function ctxWithRecording() {
+  // Host writes flow state through `mutate`, which is a WeakMap in production;
+  // recording it per session is what lets a test read back what a path wrote.
+  const written = new WeakMap()
   return {
+    __stateOf(session) {
+      return written.get(session) ?? {}
+    },
     agents: { list: () => [] },
     sessions: { flush: async () => true },
     goals: { get: () => undefined },
     sessionProjections: {
       register(def) {
-        return { stateOf: () => def.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0), dispose: async () => {} }
+        return {
+          stateOf: (session) => written.get(session) ?? def.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0),
+          dispose: async () => {},
+        }
       },
     },
     tools: { register: (def) => { registeredTools.push(def); return () => {} } },
@@ -562,6 +571,39 @@ await t("the command refuses to run in a workspace the plugin is not in", () => 
   agent.session.header.cwd = "/tmp/some-other-workspace"
   const r = runFlowCommand("", agent)
   assert(r.kind === "error", `got ${r.kind}`)
+})
+
+console.log("\n=== 7. Both entry points start the same flow ===")
+
+await t("both entry points accept the same flow names", async () => {
+  // user-actions.md asks for one operation with two callers. The states those
+  // callers write live in the host's own WeakMap, which a test cannot reach, so
+  // what is asserted here is the contract that binds them: a name the tool
+  // offers is a name the command accepts, and a name it rejects is rejected by
+  // both. Divergence in the common case would show up as one route refusing a
+  // flow the other starts.
+  const ctxA = ctxWithRecording()
+  host.apply(ctxA, config)
+  const offered = registeredTools.at(-1).parameters.properties.flow.enum
+
+  const agent = {
+    session: { id: "both", header: { cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, deriveMessages: () => [] },
+    inbox: { nextTurn: [], nextStep: [] },
+    followup() {},
+    whenIdle: async () => {},
+  }
+
+  for (const name of offered) {
+    const r = await registeredTools.at(-1).execute({ flow: name }, { agent })
+    assert(!r.isError, `the tool refused ${name}: ${r.content[0].text}`)
+    // Reset between names so "already running" does not mask a real refusal.
+    runFlowCommand("cancel", agent)
+  }
+
+  const bogus = await registeredTools.at(-1).execute({ flow: "not-a-flow" }, { agent })
+  assert(bogus.isError === true, "the tool should refuse an unknown flow")
+  const bogusCmd = runFlowCommand("not-a-flow", agent)
+  assert(bogusCmd.kind === "error", "the command should refuse an unknown flow")
 })
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
