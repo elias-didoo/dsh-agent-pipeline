@@ -41,6 +41,15 @@ window.__ModuleLoader__.load({
         "step.done": "已完成",
         "step.ongoing": "进行中",
         "step.pending": "待完成",
+        "rules.menu": "Agent 流程…",
+        "rules.title": "Agent 流程",
+        "rules.on": "已启用",
+        "rules.off": "未启用",
+        "rules.close": "关闭",
+        "rules.steps": "{n} 步",
+        "rules.empty": "这个工作区没有开启 agent-pipeline。",
+        "rules.noSession": "先在这个工作区打开一个会话，才能读到它的流程。",
+        "rules.elsewhere": "改流程请编辑 profile 里的 cordis.patch.yml。",
       },
       en: {
         "flow.pause": "Pause",
@@ -54,6 +63,15 @@ window.__ModuleLoader__.load({
         "step.done": "Done",
         "step.ongoing": "In progress",
         "step.pending": "Pending",
+        "rules.menu": "Agent flows\u2026",
+        "rules.title": "Agent flows",
+        "rules.on": "On",
+        "rules.off": "Off",
+        "rules.close": "Close",
+        "rules.steps": "{n} steps",
+        "rules.empty": "agent-pipeline is not enabled for this workspace.",
+        "rules.noSession": "Open a session in this workspace to read its flows.",
+        "rules.elsewhere": "To change a flow, edit cordis.patch.yml in the profile.",
       },
     }
 
@@ -79,6 +97,32 @@ window.__ModuleLoader__.load({
 .do-flow-step-done{color:var(--dsw-alias-text-primary,#ccc)}
 .do-flow-step-ongoing{color:var(--dsw-alias-text-link,#6aa8ff);font-weight:600}
 .do-flow-mark{font-size:11px;line-height:1}
+.ap-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42);padding:24px}
+.ap-panel{display:flex;flex-direction:column;width:min(780px,100%);max-height:min(80vh,760px);border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:10px;background:var(--dsw-alias-background-primary,#1e1e1e);box-shadow:0 12px 40px rgba(0,0,0,.45);font-size:12.5px;line-height:1.6;color:var(--dsw-alias-text-primary,#ddd);box-sizing:border-box}
+.ap-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-primary,#3a3a3a)}
+.ap-title{font-weight:600;font-size:13px}
+.ap-state{padding:1px 8px;border-radius:9px;font-size:11px;background:rgba(150,150,150,.16);color:var(--dsw-alias-text-secondary,#999)}
+.ap-state-on{background:rgba(80,160,110,.2);color:var(--dsw-alias-text-primary,#ccc)}
+.ap-where{color:var(--dsw-alias-text-secondary,#999);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:32ch}
+.ap-spacer{flex:1}
+.ap-close{background:transparent;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);color:var(--dsw-alias-text-secondary,#aaa);border-radius:5px;padding:1px 9px;font-size:11px;cursor:pointer;line-height:1.7}
+.ap-close:hover{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));color:var(--dsw-alias-text-primary,#ddd)}
+.ap-body{overflow:auto;padding:8px 14px 12px}
+.ap-note{padding:12px 2px;color:var(--dsw-alias-text-secondary,#999)}
+.ap-flow{margin-top:8px;border:1px solid var(--dsw-alias-border-primary,#333);border-radius:8px;overflow:hidden}
+.ap-flow-head{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;background:transparent;border:0;color:inherit;font:inherit;cursor:pointer;text-align:left}
+.ap-flow-head:hover{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.05))}
+.ap-caret{width:10px;color:var(--dsw-alias-text-secondary,#888);font-size:10px}
+.ap-flow-name{font-weight:600}
+.ap-flow-count{color:var(--dsw-alias-text-secondary,#999);font-variant-numeric:tabular-nums;font-size:11px}
+.ap-rows{padding:2px 10px 8px;border-top:1px solid var(--dsw-alias-border-primary,#333)}
+.ap-row{display:grid;grid-template-columns:24px 128px 60px 1fr;gap:8px;align-items:baseline;padding:3px 0}
+.ap-idx{color:var(--dsw-alias-text-secondary,#888);font-variant-numeric:tabular-nums;text-align:right}
+.ap-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;word-break:break-all}
+.ap-kind{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-text-secondary,#999)}
+.ap-prose{white-space:pre-wrap;word-break:break-word}
+.ap-exit{grid-column:2/5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-text-secondary,#999)}
+.ap-foot{padding:8px 14px;border-top:1px solid var(--dsw-alias-border-primary,#3a3a3a);color:var(--dsw-alias-text-secondary,#999);font-size:11px}
 `
 
     /** Read one locale key, falling back to English then to the key itself. */
@@ -168,6 +212,132 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** One flow's collapsible block: its label, step count, then every step. */
+    function FlowBlock(props) {
+      const { t, locale, name, flow, spec, open, onToggle } = props
+      const label = (flow?.label && (flow.label[locale] || flow.label.en)) || name
+      const ids = Array.isArray(flow?.steps) ? flow.steps : []
+      return h(
+        "div",
+        { className: "ap-flow" },
+        h(
+          "button",
+          {
+            className: "ap-flow-head",
+            type: "button",
+            "aria-expanded": open,
+            onClick: onToggle,
+          },
+          h("span", { className: "ap-caret", "aria-hidden": "true" }, open ? "\u25BE" : "\u25B8"),
+          h("span", { className: "ap-flow-name" }, label),
+          h("span", { className: "ap-flow-count" }, `(${name}) \u2014 ${t("rules.steps", { n: ids.length })}`),
+        ),
+        open
+          ? h(
+            "div",
+            { className: "ap-rows" },
+            ...ids.map((id, i) => {
+              const step = spec?.steps?.[id] ?? {}
+              // The prose a step acts on: a prompt, a branch question, or the
+              // line a stop shows before it waits.
+              const prose = String(step.prompt ?? step.question ?? step.notifyText ?? "")
+              const exits = step.do === "branch" ? Object.entries(step.options ?? {}) : []
+              return h(
+                "div",
+                { className: "ap-row", key: id },
+                h("span", { className: "ap-idx" }, String(i + 1)),
+                h("span", { className: "ap-id" }, id),
+                h("span", { className: "ap-kind" }, String(step.do ?? "")),
+                h("span", { className: "ap-prose" }, prose),
+                // A branch is only meaningful with its exits; without them the
+                // reader cannot tell where either answer leads.
+                ...exits.map(([answer, target]) => h(
+                  "span",
+                  { className: "ap-exit", key: `${id}-${answer}` },
+                  `\u251C\u2500 ${answer} \u2192 ${target}`,
+                )),
+              )
+            }),
+          )
+          : null,
+      )
+    }
+
+    /**
+     * The read-only definition panel.
+     *
+     * Rendered in `shell.overlay`: twelve steps with their full prompts are a
+     * table, and the composer dock exists for one-line status. Read-only by
+     * design — the config is the single source of truth, and the footer says
+     * where it lives.
+     */
+    function RulesPanel(props) {
+      const { t, locale, where, spec, enabled, note, onClose } = props
+      const names = spec?.flows ? Object.keys(spec.flows) : []
+      const [open, setOpen] = react.useState(() => new Set(names.slice(0, 1)))
+
+      // Escape closes, like the host's own dialogs. A read-only panel that traps
+      // a keyboard user is worse than no panel.
+      react.useEffect(() => {
+        const onKey = (e) => { if (e.key === "Escape") onClose() }
+        window.addEventListener("keydown", onKey)
+        return () => window.removeEventListener("keydown", onKey)
+      }, [onClose])
+
+      const toggle = (name) => {
+        setOpen((prev) => {
+          const next = new Set(prev)
+          if (next.has(name)) next.delete(name)
+          else next.add(name)
+          return next
+        })
+      }
+
+      const body = note
+        ? h("div", { className: "ap-note" }, t(note))
+        : names.length === 0
+          ? h("div", { className: "ap-note" }, t("rules.empty"))
+          : names.map((name) => h(FlowBlock, {
+            key: name,
+            t,
+            locale,
+            name,
+            flow: spec.flows[name],
+            spec,
+            open: open.has(name),
+            onToggle: () => toggle(name),
+          }))
+
+      return h(
+        "div",
+        {
+          className: "ap-backdrop",
+          onMouseDown: (e) => { if (e.target === e.currentTarget) onClose() },
+        },
+        h(
+          "div",
+          {
+            className: "ap-panel",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-label": t("rules.title"),
+          },
+          h(
+            "div",
+            { className: "ap-head" },
+            h("span", { className: "ap-title" }, t("rules.title")),
+            h("span", { className: `ap-state${enabled ? " ap-state-on" : ""}` },
+              enabled ? t("rules.on") : t("rules.off")),
+            where ? h("span", { className: "ap-where", title: where }, where) : null,
+            h("span", { className: "ap-spacer" }),
+            h("button", { className: "ap-close", type: "button", onClick: onClose }, t("rules.close")),
+          ),
+          h("div", { className: "ap-body" }, body),
+          h("div", { className: "ap-foot" }, t("rules.elsewhere")),
+        ),
+      )
+    }
+
     function applyClient(ctx) {
       // ── Panel strings follow the DSH language setting ──
       // Fetched rather than injected: a host without the locale service still
@@ -215,6 +385,89 @@ window.__ModuleLoader__.load({
           commands.execute(sessionId, `/flow ${action}`, [], new AbortController().signal)
         } catch { /* ignore */ }
       }
+
+      // ── Open state for the definition panel ──
+      // Kept here rather than inside the overlay component: the menu can be
+      // clicked before the overlay has ever rendered, so a setter captured at
+      // render time would be a no-op on exactly the click that matters.
+      let rulesTarget = null
+      const rulesListeners = new Set()
+      const setRulesTarget = (target) => {
+        rulesTarget = target
+        for (const notify of rulesListeners) notify()
+      }
+
+      /**
+       * What one workspace's pipeline looks like, read from the projection its
+       * sessions carry.
+       *
+       * `projectionValues` on a session-list entry is the wire view the host
+       * computed, so this reads the same shape the panel renders — the Client
+       * never folds session events itself.
+       */
+      const definitionFor = (workspaceId) => {
+        try {
+          const byId = ctx.sessions?.list?.getSnapshot?.()?.byId ?? {}
+          const items = ctx.workspaces?.list?.getSnapshot?.()?.items ?? []
+          const ws = items.find((i) => i.workspaceId === workspaceId)
+          for (const id of ws?.sessionIds ?? []) {
+            const v = byId[id]?.projectionValues?.[PROJECTION_KEY]
+            if (v) return v
+          }
+        } catch { /* a host without these services simply shows nothing */ }
+        return undefined
+      }
+
+      // ── The workspace menu entry ──
+      // Reading the rules is a view interaction, so it needs no tool and no
+      // command — the host's `/flow` only starts and steers a pipeline.
+      try {
+        ctx.contextMenus?.register?.({
+          id: "agentPipeline.rules",
+          target: "workspace",
+          // Between rename (100) and delete (300): reading what a workspace runs
+          // belongs near renaming it, far from deleting it.
+          order: 250,
+          resolve: (target) => [{
+            id: "rules",
+            label: () => makeT(activeLocale)("rules.menu"),
+            run: () => setRulesTarget(target),
+          }],
+        })
+      } catch { /* a host without the menu service has no entry */ }
+
+      // ── The definition panel ──
+      // `shell.overlay` is the frame-wide layer, so the dialog is not confined
+      // to a column or a scroll container.
+      ctx.slots.inject("shell.overlay", function* () {
+        yield ctx.slots.register(
+          { name: NS, id: "rules" },
+          function RulesOverlay() {
+            const [, force] = react.useState(0)
+            react.useEffect(() => {
+              const notify = () => force((n) => n + 1)
+              rulesListeners.add(notify)
+              return () => rulesListeners.delete(notify)
+            }, [])
+
+            const target = rulesTarget
+            if (!target) return null
+
+            const view = definitionFor(target.workspaceId)
+            return h(RulesPanel, {
+              t: makeT(activeLocale),
+              locale: activeLocale(),
+              where: target.displayTitle ?? target.title ?? "",
+              spec: view?.definition ?? null,
+              enabled: view?.enabled === true,
+              // No projection yet: the workspace has no session carrying one, so
+              // say that instead of rendering an empty panel with no reason.
+              note: view === undefined ? "rules.noSession" : null,
+              onClose: () => setRulesTarget(null),
+            })
+          },
+        )
+      })
 
       ctx.slots.inject("conversation.input.dock", function* () {
         yield ctx.slots.register(

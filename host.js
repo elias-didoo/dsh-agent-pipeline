@@ -10,9 +10,9 @@
 
 import { resolveUiLocale } from "./lib/host-locale.js"
 import { Config, effectiveConfig, validate, validateConfig } from "./lib/config.js"
-import { handleTurnEnd, beginFlow, controlFlow, flowView } from "./lib/core.js"
+import { handleTurnEnd, beginFlow, controlFlow } from "./lib/core.js"
 import { registerFlowTools } from "./lib/flow-tools.js"
-import { describeAllFlows, describeFlow, flowNames } from "./lib/flow-spec.js"
+import { describeFlow, flowNames } from "./lib/flow-spec.js"
 import { SerialQueue } from "./lib/judge.js"
 import { log } from "./lib/log.js"
 
@@ -38,10 +38,19 @@ const PROJECTION_KEY = "agent-pipeline"
  */
 function initialState(header, config) {
   try {
-    const ws = workspacesOf(config).find((w) => w?.path === header?.cwd)
-    return { enabled: ws?.enabled === true }
+    // `effectiveConfig` is the same view the runtime walks, so the panel lists
+    // exactly the steps a run would take instead of a second reading of the raw
+    // config. It returns null for a workspace that is off or absent — the same
+    // condition `enabled` reports.
+    const cfg = effectiveConfig(config, header?.cwd)
+    if (!cfg) return { enabled: false, definition: null }
+    // The definition rides beside `enabled` because both answer one question —
+    // what does this workspace's pipeline do? — and both are fixed at load
+    // time, so folding them into init costs nothing per event. `apply` stays
+    // identity; a flow's position is derived from the transcript instead.
+    return { enabled: true, definition: { steps: cfg.steps, flows: cfg.flows } }
   } catch {
-    return { enabled: false }
+    return { enabled: false, definition: null }
   }
 }
 
@@ -74,6 +83,9 @@ const stateSchema = {
     return {
       enabled: v.enabled === true,
       flow: normalizeFlow(v.flow),
+      // Kept whole: a flow definition is plain config JSON, and the panel reads
+      // it from the view rather than from a second parse.
+      definition: v.definition && typeof v.definition === "object" ? v.definition : null,
     }
   },
 }
@@ -105,6 +117,7 @@ const viewSchema = {
     return {
       enabled: v.enabled === true,
       flow: v.flow && typeof v.flow === "object" ? v.flow : null,
+      definition: v.definition && typeof v.definition === "object" ? v.definition : null,
     }
   },
 }
@@ -120,6 +133,7 @@ function viewOf(state) {
   return {
     enabled: state?.enabled === true,
     flow: state?.flow ?? null,
+    definition: state?.definition ?? null,
   }
 }
 
@@ -189,7 +203,7 @@ export function apply(ctx, config) {
   try {
     projectionHandle = ctx.sessionProjections.register({
       key: PROJECTION_KEY,
-      stateVersion: 4,
+      stateVersion: 5,
       stateSchema,
       init: (header) => initialState(header, config),
       apply: applyEvent,
@@ -335,32 +349,18 @@ export function apply(ctx, config) {
     log({ ev: "tools-fail", err: String(e?.message ?? e) })
   }
 
-  /**
-   * The `/flow` listing: where the running pipeline is, then every flow's
-   * definition.
-   *
-   * Rendering lives in flow-spec so it can be tested without a host; this only
-   * gathers what it needs.
-   */
-  function renderStatus(session, cfg, spec, names, zh) {
-    let running
-    try {
-      running = flowView({ rt: currentState(session), cfg, messages: session?.deriveMessages?.() ?? [], locale: zh ? "zh" : "en" })
-    } catch { /* a session that cannot derive messages simply has no status */ }
-    const head = running
-      ? (zh ? `当前：${running.label} ${running.done}/${running.total}（${running.status}）` : `Current: ${running.label} ${running.done}/${running.total} (${running.status})`)
-      : (zh ? "当前：没有运行中的流程" : "Current: no flow running")
-    const usage = zh
-      ? `用法：/flow ${names.join(" | ")}（启动）| /flow pause|resume|cancel（控制）`
-      : `Usage: /flow ${names.join(" | ")} (start) | /flow pause|resume|cancel (control)`
-    return [head, "", describeAllFlows(spec, zh ? "zh" : "en", running), "", usage].join("\n")
-  }
-
   // ── The /flow command ──
-  // One command, like `/goal`: no argument shows the pipeline, a flow name
-  // starts it, and the control words steer a running one. Control is
-  // user-only — an agent that could park its own pipeline could also skip a
-  // self-check — but starting is offered to both callers, and it shares
+  // Runtime only: a flow name starts one, the control words steer a running one.
+  //
+  // This command has no "show the rules" case on purpose. The client intercepts
+  // any command that declares `input` to collect an argument — it checks
+  // `desc.input !== undefined` without looking at whether anything was typed —
+  // so a bare `/flow` never reaches this handler. Reading the rules is the
+  // workspace menu's job; a branch here would be a promise the interface cannot
+  // keep.
+  //
+  // Control is user-only — an agent that could park its own pipeline could also
+  // skip a self-check — but starting is offered to both callers, and it shares
   // beginFlow with the `start_flow` tool so the two cannot diverge.
   const CONTROL_WORDS = ["pause", "resume", "cancel"]
   let disposeCommands = () => {}
@@ -369,7 +369,7 @@ export function apply(ctx, config) {
     if (configValid && commands && typeof commands.register === "function") {
       disposeCommands = commands.register({
         name: "flow",
-        description: "Show this workspace's pipelines, start one, or control the running one.",
+        description: "Run or control this workspace's pipeline.",
         input: { hint: `${allFlowNames.join(" | ")} | pause | resume | cancel` },
         handler: ({ agent, rawInput }) => {
           const session = agent?.session
@@ -382,8 +382,9 @@ export function apply(ctx, config) {
           const spec = { steps: cfg.steps ?? {}, flows: cfg.flows ?? {} }
           const names = flowNames(spec)
 
-          // Showing is the empty case, so `/flow` reads as "what is this?".
-          if (arg === "") return { kind: "success", text: renderStatus(session, cfg, spec, names, zh) }
+          // An empty argument still arrives here when the command is invoked
+          // programmatically; it reports the usage rather than inventing a
+          // second meaning for a bare `/flow`.
 
           // Control words win over flow names: they are a closed set, and a
           // flow that happens to share one would be unreachable rather than
@@ -398,8 +399,8 @@ export function apply(ctx, config) {
 
           if (!names.includes(arg)) {
             const usage = zh
-              ? `用法：/flow（查看）| /flow ${names.join(" | ")}（启动）| /flow pause|resume|cancel（控制）`
-              : `Usage: /flow (show) | /flow ${names.join(" | ")} (start) | /flow pause|resume|cancel (control)`
+              ? `用法：/flow ${names.join(" | ")}（启动）| /flow pause|resume|cancel（控制）`
+              : `Usage: /flow ${names.join(" | ")} (start) | /flow pause|resume|cancel (control)`
             return { kind: "error", text: (zh ? `没有叫 "${arg}" 的流程。\n` : `No flow named "${arg}".\n`) + usage }
           }
 

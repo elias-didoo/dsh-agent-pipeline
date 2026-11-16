@@ -36,14 +36,19 @@ const CLIENT_SRC = readFileSync(join(ROOT, "client.js"), "utf8")
  */
 function load(locale = "zh") {
   let def = null
-  let slot = null
+  const slots = []
   const react = {
     // Keep children as a real array so the tree can be walked.
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
     useEffect: () => {},
-    // One component at a time; set() replaces the current slot so a second
-    // render sees the value the first one wrote.
-    useState: () => [slot, (v) => { slot = v }],
+    // One value per hook call, in call order, so a component with several
+    // useState calls gets them back in the same order on the next render. An
+    // initializer function is called the way React calls it.
+    useState: (initial) => {
+      const index = slots.length
+      if (!(index in slots)) slots.push(typeof initial === "function" ? initial() : initial)
+      return [slots[index], (v) => { slots[index] = typeof v === "function" ? v(slots[index]) : v }]
+    },
   }
   globalThis.window = { __ModuleLoader__: { load: (d) => { def = d } } }
   globalThis.document = {
@@ -54,7 +59,7 @@ function load(locale = "zh") {
   // The module-loader entry point is a script for the page to eval.
   eval(CLIENT_SRC)
   const mod = def.factory((n) => (n === "react" ? react : {}))
-  return { mod, def, getSlot: () => slot }
+  return { mod, def, getSlot: () => slots }
 }
 
 /**
@@ -90,21 +95,35 @@ function projectionView(overrides = {}) {
 /** Mount the client against a fake ctx and return the registered pieces. */
 function mount({ locale = "zh", view = projectionView(), workspaceId = "w1" } = {}) {
   const { mod, def } = load(locale)
-  const registered = { menus: [], slot: null, dicts: [] }
+  const registered = { menus: [], slot: null, overlay: null, dicts: [] }
   const session = { id: "s1", workspaceId, projectionValues: { "agent-pipeline": view } }
   const ctx = {
     effect: (fn) => { fn() },
     contextMenus: { register: (m) => { registered.menus.push(m); return () => {} } },
     slots: {
-      inject: (_k, gen) => { const it = gen(); it.next(); return () => {} },
-      register: (_d, comp) => { registered.slot = comp; return () => {} },
+      inject: (key, gen) => {
+        const it = gen()
+        it.next()
+        // `shell.overlay` carries the read-only definition panel; the composer
+        // dock carries the running-flow status. Keep them apart so a test can
+        // drive the one it means.
+        if (key === "shell.overlay") registered.overlayKey = true
+        return () => {}
+      },
+      register: (d, comp) => {
+        if (d?.id === "rules") registered.overlay = comp
+        else registered.slot = comp
+        return () => {}
+      },
     },
     sessions: { list: { getSnapshot: () => ({ byId: { s1: session }, allIds: ["s1"] }) } },
     workspaces: {
       list: {
+        // The real snapshot exposes `items`, and the host's own workspace code
+        // looks a row up with `items.find(i => i.workspaceId === id)`. A harness
+        // shaped like `byId` would let a panel that reads the wrong field pass.
         getSnapshot: () => ({
-          byId: { [workspaceId]: { id: workspaceId, sessionIds: ["s1"] } },
-          allIds: [workspaceId],
+          items: [{ workspaceId, id: workspaceId, sessionIds: ["s1"] }],
         }),
       },
     },
@@ -325,6 +344,168 @@ await t("pressing pause runs the host command", () => {
   assert(calls.length === 1, `should call execute once, got ${calls.length}`)
   assert(String(calls[0][1]).includes("pause"), `command should ask for pause, got ${calls[0][1]}`)
   assert(calls[0][0] === "s1", `command should target the session, got ${calls[0][0]}`)
+})
+
+console.log("\n=== the workspace menu and the definition panel ===")
+
+/** A view with a definition, shaped like host.js viewOf() produces. */
+function rulesView(overrides = {}) {
+  return {
+    enabled: true,
+    flow: null,
+    definition: {
+      steps: {
+        review: { do: "send", prompt: "read everything first" },
+        confirm: { do: "stop", notifyText: "waiting for your call" },
+        pick: { do: "branch", question: "clean or not?", options: { clean: "push", problems: "fix" } },
+        push: { do: "send", prompt: "push it" },
+        fix: { do: "send", prompt: "fix it" },
+      },
+      flows: {
+        requirement: { label: { zh: "需求流程", en: "Requirement" }, steps: ["review", "confirm", "pick"] },
+      },
+    },
+    ...overrides,
+  }
+}
+
+/** Flatten nested children the way React does, so the tree can be walked. */
+function kids(node) {
+  // This file's `h` keeps children on the node itself; React keeps them in
+  // props. Read both so a helper works against either shape.
+  const c = node?.children ?? node?.props?.children
+  if (c === undefined) return []
+  return (Array.isArray(c) ? c : [c]).flat(Infinity).filter((x) => x != null)
+}
+
+/** Expand function components until a host element comes out. */
+function render(node) {
+  let n = node
+  let guard = 0
+  while (n && typeof n.type === "function" && guard++ < 20) n = n.type(n.props)
+  return n
+}
+
+/** All text under a node. */
+function textOf(node) {
+  if (node == null) return ""
+  if (typeof node === "string" || typeof node === "number") return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join("")
+  return textOf(kids(node))
+}
+
+/** Open the panel through the menu and return the rendered dialog. */
+function openPanel(m) {
+  m.registered.menus[0].resolve({ workspaceId: "w1", displayTitle: "brandu" })[0].run()
+  const backdrop = render(m.registered.overlay())
+  return render(kids(backdrop)[0])
+}
+
+await t("the workspace menu offers one action, labelled in the active language", () => {
+  const m = mount({ view: rulesView() })
+  assert(m.registered.menus.length === 1, `registered ${m.registered.menus.length} menus`)
+  const menu = m.registered.menus[0]
+  assert(menu.target === "workspace", `target=${menu.target}`)
+  const item = menu.resolve({ workspaceId: "w1", displayTitle: "brandu" })[0]
+  assert(item.label() === "Agent 流程…", `label=${item.label()}`)
+})
+
+await t("the panel is closed until the menu is used", () => {
+  const m = mount({ view: rulesView() })
+  assert(m.registered.overlay() === null, "should render nothing before a click")
+})
+
+await t("the very first click opens it", () => {
+  // The setter lives at module scope: a version that assigned it during render
+  // would be a no-op on exactly this click, because the overlay has not
+  // rendered yet.
+  const m = mount({ view: rulesView() })
+  const panel = openPanel(m)
+  assert(panel, "empty after the first click")
+})
+
+await t("the panel shows whether the workspace is on", () => {
+  const m = mount({ view: rulesView() })
+  const head = render(kids(openPanel(m))[0])
+  assert(textOf(kids(head)[0]) === "Agent 流程", `title=${textOf(kids(head)[0])}`)
+  assert(textOf(kids(head)[1]) === "已启用", `state=${textOf(kids(head)[1])}`)
+})
+
+await t("the panel shows each flow with its label and step count", () => {
+  const m = mount({ view: rulesView() })
+  const body = render(kids(openPanel(m))[1])
+  const blocks = kids(body)
+  assert(blocks.length === 1, `flows=${blocks.length}`)
+  const head = render(kids(render(blocks[0]))[0])
+  assert(textOf(kids(head)[1]) === "需求流程", `label=${textOf(kids(head)[1])}`)
+  assert(textOf(kids(head)[2]).includes("3 步"), `count=${textOf(kids(head)[2])}`)
+})
+
+await t("the panel shows every step with its id, kind and whole prompt", () => {
+  const m = mount({ view: rulesView() })
+  const body = render(kids(openPanel(m))[1])
+  const rows = render(kids(render(kids(body)[0]))[1])
+  const items = kids(rows).filter((r) => render(r).props?.className === "ap-row")
+  assert(items.length === 3, `rows=${items.length}`)
+  const first = kids(render(items[0])).map((c) => textOf(render(c)))
+  assert(first[0] === "1", `index=${first[0]}`)
+  assert(first[1] === "review", `id=${first[1]}`)
+  assert(first[2] === "send", `kind=${first[2]}`)
+  assert(first[3] === "read everything first", `prompt=${first[3]}`)
+})
+
+await t("a stop step shows the line it waits on", () => {
+  const m = mount({ view: rulesView() })
+  const body = render(kids(openPanel(m))[1])
+  const rows = render(kids(render(kids(body)[0]))[1])
+  const items = kids(rows).filter((r) => render(r).props?.className === "ap-row")
+  assert(textOf(render(items[1])).includes("waiting for your call"), "stop line missing")
+})
+
+await t("a branch shows where each answer leads", () => {
+  // Without the exits the reader cannot tell which way either answer goes.
+  const m = mount({ view: rulesView() })
+  const body = render(kids(openPanel(m))[1])
+  const rows = render(kids(render(kids(body)[0]))[1])
+  const branch = kids(rows).find((r) => textOf(render(r)).includes("clean or not?"))
+  assert(branch, "branch row missing")
+  const exits = kids(render(branch))
+    .filter((c) => render(c).props?.className === "ap-exit")
+    .map((c) => textOf(c))
+  assert(exits.length === 2, `exits=${exits.length}`)
+  assert(exits.some((e) => e.includes("clean") && e.includes("push")), `clean exit: ${exits.join(" | ")}`)
+  assert(exits.some((e) => e.includes("problems") && e.includes("fix")), `problems exit: ${exits.join(" | ")}`)
+})
+
+await t("the footer says where the flow is edited", () => {
+  const m = mount({ view: rulesView() })
+  const foot = render(kids(openPanel(m))[2])
+  assert(textOf(foot).includes("cordis.patch.yml"), `footer=${textOf(foot)}`)
+})
+
+await t("the close button closes it", () => {
+  const m = mount({ view: rulesView() })
+  const head = render(kids(openPanel(m))[0])
+  const btn = kids(head).find((c) => render(c).props?.onClick)
+  render(btn).props.onClick()
+  assert(m.registered.overlay() === null, "still visible")
+})
+
+await t("a workspace whose sessions carry no projection says so", () => {
+  // The panel reads the view from a session of that workspace. With none, the
+  // panel must explain that rather than render an empty box.
+  const m = mount({ view: rulesView() })
+  const before = m.registered.overlay
+  m.ctx.sessions.list.getSnapshot = () => ({ byId: {}, allIds: [] })
+  const body = render(kids(openPanel(m))[1])
+  assert(textOf(body).includes("打开一个会话"), `note=${textOf(body)}`)
+  void before
+})
+
+await t("a workspace the plugin is off for shows the off state", () => {
+  const m = mount({ view: { enabled: false, flow: null, definition: null } })
+  const head = render(kids(openPanel(m))[0])
+  assert(textOf(kids(head)[1]) === "未启用", `state=${textOf(kids(head)[1])}`)
 })
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)

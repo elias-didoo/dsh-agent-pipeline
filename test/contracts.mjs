@@ -58,11 +58,13 @@ await t("init and apply present", () => {
 
 console.log("\n=== 2. The client registers into the dock, not a menu ===")
 
-await t("the client no longer registers a context menu", () => {
-  // The old panel opened from a workspace right-click. The flow is now a
-  // standing panel; a menu entry that opens a second view of the same state
-  // would be two places to keep in step.
-  assert(!/contextMenus/.test(clientCode), "client must not register a context menu")
+await t("the client registers a workspace context menu for the definition panel", () => {
+  // Reading what a workspace runs is a view interaction, so it is a menu entry
+  // rather than a command: `/flow` declares `input` and is therefore always
+  // intercepted for an argument, which leaves no room for a "show" case there.
+  assert(/contextMenus\?\.register/.test(clientCode), "client must register a context menu")
+  const target = /target:\s*"([^"]+)"/.exec(clientCode)?.[1]
+  assert(target === "workspace", `menu target should be "workspace", got ${target}`)
 })
 
 console.log("\n=== 3. slots contract ===")
@@ -95,8 +97,17 @@ await t("the register definition names the entry and gives it an id", () => {
 
 await t("the dock entry gives itself an id of its own", () => {
   // Reusing a shipped id would replace that entry rather than sit beside it.
-  const id = /\bid:\s*"([^"]+)"/.exec(registerDefinition())?.[1]
+  // Read the dock registration specifically: the client registers two entries
+  // now, and the first `id:` in the file belongs to the overlay panel.
+  const dockBlock = clientCode.slice(clientCode.indexOf("conversation.input.dock"))
+  const id = /\bid:\s*"([^"]+)"/.exec(dockBlock)?.[1]
   assert(id === "flow", `dock entry id should be "flow", got ${id}`)
+})
+
+await t("the overlay panel gives itself an id too", () => {
+  const overlayBlock = clientCode.slice(clientCode.indexOf("shell.overlay"))
+  const id = /\bid:\s*"([^"]+)"/.exec(overlayBlock)?.[1]
+  assert(id === "rules", `overlay entry id should be "rules", got ${id}`)
 })
 
 console.log("\n=== 4. Client ModuleLoader contract ===")

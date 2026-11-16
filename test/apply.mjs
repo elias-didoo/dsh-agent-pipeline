@@ -38,7 +38,8 @@ function ctxWithRecording() {
   // Host writes flow state through `mutate`, which is a WeakMap in production;
   // recording it per session is what lets a test read back what a path wrote.
   const written = new WeakMap()
-  return {
+  const api = {}
+  const ctx = {
     __stateOf(session) {
       return written.get(session) ?? {}
     },
@@ -47,6 +48,9 @@ function ctxWithRecording() {
     goals: { get: () => undefined },
     sessionProjections: {
       register(def) {
+        // Keep the definition: the panel's view is produced through it, and a
+        // schema that drops a field is invisible everywhere else.
+        api.__projectionDef = def
         return {
           stateOf: (session) => written.get(session) ?? def.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0),
           dispose: async () => {},
@@ -61,6 +65,10 @@ function ctxWithRecording() {
     on: () => {},
     effect: () => {},
   }
+  api.__projectionDef = undefined
+  // Expose the captured definition through the object the tests already use.
+  Object.defineProperty(ctx, "__projectionDef", { get: () => api.__projectionDef })
+  return ctx
 }
 
 const ctx = {
@@ -507,17 +515,14 @@ function flowAgent(id = "cmd-agent") {
   }
 }
 
-await t("/flow with no argument lists the flows and their steps", () => {
-  const live = host.apply(ctxWithRecording(), config)
-  const agent = flowAgent("list")
-  const r = runFlowCommand("", agent)
-  assert(r.kind === "success", `got ${r.kind}: ${r.text}`)
-  assert(r.text.includes("demo"), `flow name missing: ${r.text.slice(0, 80)}`)
-  // The listing is the point: a param-free /flow has to show what the pipeline
-  // actually says, not just its shape.
-  assert(r.text.includes("p1"), `step prompt missing: ${r.text.slice(0, 120)}`)
-  assert(/no flow running/i.test(r.text), `status line missing: ${r.text.slice(0, 80)}`)
-  void live
+await t("/flow with no argument reports the usage rather than a listing", () => {
+  // The client intercepts a command that declares `input` before an empty
+  // submission reaches the host, so a bare `/flow` cannot be a view. Reading the
+  // rules is the workspace menu's job; this path must not pretend otherwise.
+  host.apply(ctxWithRecording(), config)
+  const r = runFlowCommand("", flowAgent("bare"))
+  assert(r.kind === "error", `got ${r.kind}: ${r.text}`)
+  assert(/Usage/.test(r.text), `should name the usage: ${r.text}`)
 })
 
 await t("/flow <name> starts that flow", () => {
@@ -604,6 +609,75 @@ await t("both entry points accept the same flow names", async () => {
   assert(bogus.isError === true, "the tool should refuse an unknown flow")
   const bogusCmd = runFlowCommand("not-a-flow", agent)
   assert(bogusCmd.kind === "error", "the command should refuse an unknown flow")
+})
+
+console.log("\n=== the view the panel reads ===")
+
+await t("the view carries the flow definition", () => {
+  // The workspace menu opens a read-only panel from this value. Without it the
+  // panel has nothing to show; a shape that differs from viewSchema is dropped
+  // silently and the panel renders empty with no reason.
+  host.apply(ctxWithRecording(), config)
+  const ws = hostApis().getWorkspace("/tmp/dsh-decision-orchestrator-test-workspace")
+  assert(ws.enabled === true, "workspace should be enabled")
+  assert(ws.flows.length === 1, `flows=${ws.flows.length}`)
+  assert(ws.steps.plan, "steps missing")
+})
+
+await t("viewSchema accepts the definition, so a session still loads", () => {
+  // The projection's view is parsed on every read. A field the schema does not
+  // pass through is dropped; a schema that throws makes the session unreadable.
+  const mod = host
+  assert(typeof mod.apply === "function", "apply missing")
+  const spy = ctxWithRecording()
+  host.apply(spy, config)
+  const def = spy.__projectionDef
+  assert(def, "projection definition captured")
+  const state = def.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
+  assert(state.definition, `definition missing from init: ${JSON.stringify(state)}`)
+  const view = def.wire.view(state)
+  const parsed = def.wire.viewSchema.parse(view)
+  assert(parsed.definition, "viewSchema dropped the definition")
+  assert(parsed.definition.flows.demo, "the flow is missing from the parsed view")
+  assert(parsed.definition.steps.plan, "the step is missing from the parsed view")
+})
+
+await t("the projection stateVersion was bumped for the new field", () => {
+  const spy = ctxWithRecording()
+  host.apply(spy, config)
+  assert(spy.__projectionDef.stateVersion === 5, `stateVersion=${spy.__projectionDef.stateVersion}`)
+})
+
+await t("a workspace that is off carries no definition", () => {
+  const spy = ctxWithRecording()
+  host.apply(spy, { workspaces: [{ path: "/tmp/elsewhere", enabled: false, steps: {}, flows: [] }] })
+  const def = spy.__projectionDef
+  const state = def.init({ cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, 0)
+  assert(state.enabled === false, "should be off")
+  assert(state.definition === null, `definition=${JSON.stringify(state.definition)}`)
+})
+
+await t("/flow no longer claims to show anything", () => {
+  host.apply(ctxWithRecording(), config)
+  const cmd = registeredCommands.at(-1)
+  assert(/Run or control/.test(cmd.description), `description=${cmd.description}`)
+  assert(!/Show/.test(cmd.description), `description still mentions Show: ${cmd.description}`)
+})
+
+await t("an empty /flow argument reports the usage instead of a listing", () => {
+  // The client intercepts an `input` command before an empty submission, so this
+  // path is only reachable programmatically — it must not pretend to be a view.
+  host.apply(ctxWithRecording(), config)
+  const agent = {
+    session: { id: "empty", header: { cwd: "/tmp/dsh-decision-orchestrator-test-workspace" }, deriveMessages: () => [] },
+    inbox: { nextTurn: [], nextStep: [] },
+    followup() {},
+    whenIdle: async () => {},
+  }
+  const r = registeredCommands.at(-1).handler({ agent, rawInput: "" })
+  assert(r.kind === "error", `kind=${r.kind}`)
+  assert(/Usage/.test(r.text), `should name the usage, got: ${r.text}`)
+  assert(!/demo/.test(r.text.split("\n")[0]), "should not list the flows as a heading")
 })
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)

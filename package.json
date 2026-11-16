@@ -34,7 +34,10 @@
   },
   "dsh": {
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-context-menu"
+      ]
     }
   }
 }
