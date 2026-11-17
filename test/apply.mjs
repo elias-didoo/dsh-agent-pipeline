@@ -694,6 +694,9 @@ await t("apply tells the agent which flows it can start", () => {
   assert(added.length === 1, `sections added: ${added.length}`)
   const section = added[0]
   assert(section.name === "agent-pipeline", `name=${section.name}`)
+  // The host rejects a section without a finite order. A loose test stub would
+  // accept it and the failure would only show up in a live install.
+  assert(Number.isFinite(section.order), `order must be a finite number, got ${JSON.stringify(section.order)}`)
   assert(section.text.includes("start_flow"), "the prompt must name the tool")
   assert(section.text.includes("demo"), "the prompt must name the flows available here")
 })

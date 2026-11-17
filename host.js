@@ -364,6 +364,10 @@ export function apply(ctx, config) {
     try {
       ctx.systemPrompt.section({
         name: "agent-pipeline",
+        // After the goal tool (2400) and before schedule (2500): this is the
+        // same kind of instruction — start a long-running thing — so it belongs
+        // beside them rather than in the tool-listing block.
+        order: 2450,
         text: [
           `This workspace has fixed review pipelines: ${allFlowNames.join(", ")}.`,
           "Call start_flow when the user asks for a requirement, reports a bug, or asks about a rebase conflict.",
