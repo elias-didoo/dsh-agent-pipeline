@@ -1,0 +1,57 @@
+name: Bug report
+description: Something the plugin did, or failed to do.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most bugs in this plugin show up in the run log first. Pasting the
+        relevant lines is usually the difference between a fix in one round and
+        several.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Run log
+      description: |
+        Lines from `~/.dsh/agent-pipeline/logs/$(date +%F).jsonl` around the
+        moment it went wrong. Redact anything private.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: From the release tag you installed, or `package.json`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH version
+      description: DeepSeek Harness version, from About or the install page.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: The flow config
+      description: |
+        The `agent-pipeline` block from your `cordis.patch.yml`, with anything
+        private removed. If validation is the problem this is the whole bug.
+      render: yaml
+    validations:
+      required: false

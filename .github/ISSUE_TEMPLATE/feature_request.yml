@@ -1,0 +1,33 @@
+name: Feature request
+description: Something the plugin should do and does not.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: |
+        The situation, not the solution. "I want to pause a flow when I leave
+        for lunch" is more useful than "add a lunch button".
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: The workaround, if there is one. It shows where the real cost is.
+    validations:
+      required: false
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: How you would configure it
+      description: |
+        This plugin's shape is "a workspace fixes its process in config, the
+        plugin walks it". A request that fits that shape is far more likely to
+        land than one that needs a new moving part.
+      render: yaml
+    validations:
+      required: false

@@ -1,10 +1,41 @@
 # dsh-agent-pipeline
 
-[中文](README.zh-CN.md) | **English**
+<p align="center">
+  <a href="https://img.shields.io/badge/DSH-Plugin-8b5cf6"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6" alt="DSH Plugin"></a>
+  <a href="https://github.com/elias-didoo/dsh-agent-pipeline/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-10b981" alt="license"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-22%2B-f59e0b" alt="Node version"></a>
+</p>
 
-A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that runs a workspace's fixed review pipeline, sending the next prompt whenever the agent finishes the last one, and asking a local decision model only where the pipeline genuinely forks.
+<p align="center">
+  <a href="README.md"><b>English</b></a> •
+  <a href="README.zh-CN.md"><b>中文说明</b></a>
+</p>
 
-> **It does not think for you.** You decide the process once; it walks it. The model is consulted only at the forks you left open.
+## The problem
+
+After every review step the agent stops. You read the diff, you type "continue",
+it does the next thing. Multiply that by twelve steps per change and the review
+is mostly you typing "continue".
+
+This plugin makes the process the thing that runs. You write the steps down once
+in the profile config — what to prompt, where to pause, which answers lead where
+— and from then on the next prompt fires the moment the agent finishes the last
+one. It stops only where you said it should stop, and it asks a local model only
+where the pipeline genuinely forks.
+
+**It does not think for you.** You decide the process; it walks it.
+
+```mermaid
+graph LR
+  U[you: "review this"] --> S[start_flow]
+  S --> A[step 1 · send]
+  A --> T[turn ends]
+  T --> K{the step's do}
+  K -->|send| A
+  K -->|stop| W[waits for you]
+  K -->|branch| M[local model picks]
+  M --> A
+```
 
 ## Requirements
 
@@ -16,19 +47,22 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that runs a workspac
 
 ## Install
 
-```bash
-git clone https://github.com/elias-didoo/dsh-agent-pipeline.git \
-  ~/Downloads/agent-pipeline
-cd ~/Downloads/agent-pipeline
-npm test          # optional, verifies your environment
-```
-
-Install it as a bundle, the way any DSH plugin is installed — **Plugins → Add
-plugin** with the directory path, or:
+Download the tarball from the [latest release](https://github.com/elias-didoo/dsh-agent-pipeline/releases/latest),
+then install it the way any DSH plugin is installed — **Plugins → Add plugin**
+with the path, or:
 
 ```json
-{ "action": "install_bundle", "target": "/absolute/path/to/agent-pipeline" }
+{ "action": "install_bundle", "target": "/absolute/path/to/dsh-agent-pipeline-0.1.0.tgz" }
 ```
+
+From source instead:
+
+```bash
+git clone https://github.com/elias-didoo/dsh-agent-pipeline.git
+cd dsh-agent-pipeline && npm test        # optional, verifies your environment
+```
+
+...and point **Plugins → Add plugin** at that directory.
 
 Then give the row its config in `~/.dsh/profiles/desktop/cordis.patch.yml`. A
 patch that names an existing row by `id` and carries no `insert` **replaces**
@@ -368,13 +402,26 @@ node test/all.mjs --fast   # skip the live-model suite
 
 | Suite | Covers |
 |---|---|
-| `contracts.mjs` | DSH runtime contracts, inject coverage, zero external deps |
-| `apply.mjs` | Projection wiring and schemas |
+| `flow-spec.mjs` | Flow validation, step kinds, the definition listing |
+| `flow-machine.mjs` | Cursor, advance, pause, replay from the transcript |
+| `flow.mjs` | Every branch of the main loop |
+| `apply.mjs` | Projection wiring and schemas, the `/flow` command, the agent prompt |
+| `client.mjs` | The panel and the workspace menu, rendered against a React stand-in |
 | `context.mjs` | Context budget, last-message priority, source labels |
 | `confidence.mjs` | Confidence (raw p_max) and the uncertain path |
-| `phase.mjs` | Stage progress derivation + `pickRule` lookup |
-| `flow.mjs` | Every branch of the main loop |
+| `contracts.mjs` | DSH runtime contracts, inject coverage, bundle manifest, zero external deps |
+| `readme.mjs` | The config example in both READMEs still validates |
 | `e2e-kev.mjs` | End-to-end against a live model |
+
+A full run ends with:
+
+```text
+=== 29 passed / 0 failed ===
+=== 33 passed / 0 failed ===
+...
+=== 12/12 ===
+✅ All suites passed
+```
 
 ## Troubleshooting
 

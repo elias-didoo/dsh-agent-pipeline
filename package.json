@@ -1,18 +1,30 @@
 {
   "name": "dsh-agent-pipeline",
   "version": "0.1.0",
-  "description": "Run a workspace's fixed review pipeline in DeepSeek Harness: each step fires when the agent finishes the last one, and the pipeline pauses where you have to decide.",
   "type": "module",
-  "license": "MIT",
+  "description": "Run a workspace's fixed review pipeline in DeepSeek Harness: each step fires when the agent finishes the last one, and the pipeline pauses where you have to decide.",
   "keywords": [
-    "deepseek-harness",
     "dsh",
     "dsh-plugin",
-    "agent",
-    "workflow",
+    "deepseek-harness",
+    "cordis",
     "pipeline",
-    "orchestration"
+    "workflow",
+    "code-review",
+    "ai-agent"
   ],
+  "homepage": "https://github.com/elias-didoo/dsh-agent-pipeline#readme",
+  "bugs": {
+    "url": "https://github.com/elias-didoo/dsh-agent-pipeline/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elias-didoo/dsh-agent-pipeline.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./host.js",
     "./client": "./client.js",
@@ -23,15 +35,16 @@
     "client.js",
     "lib",
     "locale",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "node test/all.mjs",
     "test:fast": "node test/all.mjs --fast",
     "typecheck": "./test/typecheck.sh"
-  },
-  "engines": {
-    "node": ">=22"
   },
   "dsh": {
     "bundle": {

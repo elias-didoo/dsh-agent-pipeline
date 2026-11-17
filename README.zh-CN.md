@@ -1,10 +1,35 @@
 # dsh-agent-pipeline
 
-**中文** | [English](README.md)
+<p align="center">
+  <a href="https://img.shields.io/badge/DSH-Plugin-8b5cf6"><img src="https://img.shields.io/badge/DSH-Plugin-8b5cf6" alt="DSH Plugin"></a>
+  <a href="https://github.com/elias-didoo/dsh-agent-pipeline/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-10b981" alt="license"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node-22%2B-f59e0b" alt="Node version"></a>
+</p>
 
-[DeepSeek Harness](https://github.com/deepseek-ai) 插件：跑一个工作区固定的评审流程，agent 做完上一步就发下一步，只在你留了岔路的地方才问本地决策模型。
+<p align="center">
+  <a href="README.md"><b>English</b></a> •
+  <a href="README.zh-CN.md"><b>中文说明</b></a>
+</p>
 
-> **它不替你思考，只是把「下一步该做什么」这一判断交给一个模型，然后按你写好的决策点执行。**
+## 它解决什么
+
+agent 每做完一步都会停下来。你看完改动，敲一句「继续」，它才做下一步。一次改动十来个步骤，评审里大半时间是在敲「继续」。
+
+这个插件让**流程本身**来跑。你在 profile 配置里把步骤写一次——发什么提示、哪里停下来、哪个答案走向哪——之后每一步都在 agent 完成上一步的瞬间自动发出。它只在你指定的地方停，只在你留了岔路的地方才问本地模型。
+
+**它不替你思考。** 你定流程，它走流程。
+
+```mermaid
+graph LR
+  U[你："看看这个改动"] --> S[start_flow]
+  S --> A[第 1 步 · send]
+  A --> T[本轮结束]
+  T --> K{该步的 do}
+  K -->|send| A
+  K -->|stop| W[等你]
+  K -->|branch| M[本地模型选向]
+  M --> A
+```
 
 ## 前置条件
 
@@ -16,20 +41,22 @@
 
 ## 安装
 
-```bash
-git clone https://github.com/elias-didoo/dsh-agent-pipeline.git \
-  ~/Downloads/agent-pipeline
-cd ~/Downloads/agent-pipeline
-npm test          # 可选，验证环境
-```
-
-按 DSH 插件的方式装成 **bundle**——**Plugins → Add plugin** 填目录路径，或者：
+从[最新 release](https://github.com/elias-didoo/dsh-agent-pipeline/releases/latest) 下载 tarball，然后按 DSH 插件的方式装——**Plugins → Add plugin** 填路径，或者：
 
 ```json
-{ "action": "install_bundle", "target": "/absolute/path/to/agent-pipeline" }
+{ "action": "install_bundle", "target": "/absolute/path/to/dsh-agent-pipeline-0.1.0.tgz" }
 ```
 
-然后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 给它配置。只写 `id`、不带 `insert` 的 patch 会**整体替换**那一行的 config，entry 本身由 bundle 提供：
+也可以从源码装：
+
+```bash
+git clone https://github.com/elias-didoo/dsh-agent-pipeline.git
+cd dsh-agent-pipeline && npm test        # 可选，验证环境
+```
+
+然后用 **Plugins → Add plugin** 指向那个目录。
+
+装好后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 给它配置。只写 `id`、不带 `insert` 的 patch 会**整体替换**那一行的 config，entry 本身由 bundle 提供：
 
 ```yaml
 - id: agent-pipeline
@@ -314,13 +341,26 @@ node test/all.mjs --fast   # 跳过真实 Kev
 
 | 套件 | 覆盖 |
 |---|---|
-| `contracts.mjs` | DSH 运行时契约、inject 覆盖、零外部依赖 |
-| `apply.mjs` | projection 装配与 schema |
+| `flow-spec.mjs` | 流程校验、do 类型、流程定义文本 |
+| `flow-machine.mjs` | 游标、推进、暂停、从对话记录重放 |
+| `flow.mjs` | 主循环全部分支 |
+| `apply.mjs` | projection 装配与 schema、`/flow` 命令、给 agent 的提示 |
+| `client.mjs` | 面板与工作区菜单，在 React 替身上真实渲染 |
 | `context.mjs` | 上下文预算、最后一条优先、来源标签 |
 | `confidence.mjs` | 置信度归一化与门槛效果 |
-| `phase.mjs` | 阶段进度推导 + pickRule 查表 |
-| `flow.mjs` | 主循环全部分支 |
+| `contracts.mjs` | DSH 运行时契约、inject 覆盖、bundle 清单、零外部依赖 |
+| `readme.mjs` | 两份 README 里的配置样例仍能通过校验 |
 | `e2e-kev.mjs` | 真实 Kev 端到端 |
+
+完整跑完最后会看到：
+
+```text
+=== 29 passed / 0 failed ===
+=== 33 passed / 0 failed ===
+...
+=== 12/12 ===
+✅ All suites passed
+```
 
 ## 排查
 
