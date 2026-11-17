@@ -2,6 +2,12 @@
  * Simulate DSH's apply() call with a fake ctx shaped like the real API.
  * Goal: confirm apply() does not throw, before ever mounting it.
  */
+// Point the run log at a temp directory *before* importing the host: the module
+// reads the path when it loads, and this file calls apply() many times. Left
+// alone, every test run appends to the real ~/.dsh/agent-pipeline/logs, which is
+// how a test's `apply` ends up looking like a real load to anyone reading them.
+process.env.AGENT_PIPELINE_LOG_DIR ??= (await import("node:os")).tmpdir() + "/agent-pipeline-test-logs"
+
 const host = await import("../host.js")
 const { Config, validate } = await import("../lib/config.js")
 
