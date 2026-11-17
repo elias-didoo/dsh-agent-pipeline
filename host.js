@@ -22,7 +22,10 @@ export const name = "dsh-agent-pipeline"
 // why the host's meter is not trusted). A declared service is a hard
 // prerequisite — a profile without it leaves the plugin inactive — so keeping
 // one that is never read would block loading for nothing.
-export const inject = ["agents", "sessions", "goals", "schedule", "sessionProjections"]
+// `systemPrompt` is required, not optional: without it the plugin registers a
+// tool the agent never learns about, and nothing in the harness makes a model
+// look for a tool it has not been told exists.
+export const inject = ["agents", "sessions", "goals", "schedule", "sessionProjections", "systemPrompt"]
 export { Config }
 
 /** Projection unit definition. */
@@ -347,6 +350,30 @@ export function apply(ctx, config) {
     log({ ev: "tools-registered", flows: allFlowNames })
   } catch (e) {
     log({ ev: "tools-fail", err: String(e?.message ?? e) })
+  }
+
+  // ── Tell the agent the pipelines exist ──
+  // Registering `start_flow` is not enough. Nothing in the harness makes a model
+  // go looking for a tool it has never heard of, so without this line the tool
+  // sits unused and the plugin does nothing at all — a whole flow engine that
+  // never starts, which is exactly what happened before this section existed.
+  //
+  // Only when a workspace actually offers one: an agent told about pipelines it
+  // cannot start would call a tool that always fails.
+  if (allFlowNames.length > 0) {
+    try {
+      ctx.systemPrompt.section({
+        name: "agent-pipeline",
+        text: [
+          `This workspace has fixed review pipelines: ${allFlowNames.join(", ")}.`,
+          "Call start_flow when the user asks for a requirement, reports a bug, or asks about a rebase conflict.",
+          "Do not start one for a plain question, a general discussion, or a change that is none of those.",
+        ].join(" "),
+      })
+      log({ ev: "prompt-registered", flows: allFlowNames })
+    } catch (e) {
+      log({ ev: "prompt-fail", err: String(e?.message ?? e) })
+    }
   }
 
   // ── The /flow command ──

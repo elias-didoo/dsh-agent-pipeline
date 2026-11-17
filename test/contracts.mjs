@@ -8,7 +8,7 @@
  * Run: node test/contracts.mjs
  */
 
-import { readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -217,6 +217,44 @@ await t("every service in inject is referenced by the code", () => {
   assert(declared.length > 0, "inject is empty")
   const unread = declared.filter((svc) => !new RegExp(`\\.${svc}\\b|ctx\\.get\\(["']${svc}["']\\)`).test(code))
   assert(unread.length === 0, `declared but never read: ${unread.join(", ")}`)
+})
+
+console.log("\n=== 5f. The package is a bundle ===")
+
+await t("package.json declares dsh.bundle.patch", () => {
+  // A bundle is a package whose package.json declares dsh.bundle.patch. Without
+  // it DSH loads the row from the profile as a plain entry: the plugin runs, but
+  // it is not an installed bundle, so it never appears in the plugin list and
+  // Plugin Manager cannot manage it.
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
+  assert(pkg.dsh?.bundle?.patch === "./cordis.patch.yml", `dsh.bundle.patch=${JSON.stringify(pkg.dsh?.bundle)}`)
+})
+
+await t("the patch the bundle names exists", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
+  const patch = join(ROOT, pkg.dsh.bundle.patch)
+  assert(existsSync(patch), `missing ${patch}`)
+})
+
+await t("the patch quotes the package name", () => {
+  // `@` starts a YAML reserved scalar, so an unquoted name fails to parse and
+  // the whole install is rejected.
+  const patch = readFileSync(join(ROOT, "cordis.patch.yml"), "utf8")
+  const line = patch.split("\n").find((l) => l.trim().startsWith("name:"))
+  assert(line, "no name line in the patch")
+  assert(/name:\s*"/.test(line), `name must be quoted: ${line.trim()}`)
+})
+
+await t("the patch inserts the row this package provides", () => {
+  const patch = readFileSync(join(ROOT, "cordis.patch.yml"), "utf8")
+  assert(/id:\s*agent-pipeline/.test(patch), "row id missing")
+  assert(/dsh-agent-pipeline/.test(patch), "row name missing")
+})
+
+await t("files lists the patch so a packed install carries it", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
+  assert(Array.isArray(pkg.files) && pkg.files.includes("cordis.patch.yml"),
+    `files=${JSON.stringify(pkg.files)}`)
 })
 
 console.log("\n=== 6. Zero external dependencies ===")

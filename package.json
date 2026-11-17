@@ -22,7 +22,8 @@
     "host.js",
     "client.js",
     "lib",
-    "locale/*.json"
+    "locale",
+    "cordis.patch.yml"
   ],
   "scripts": {
     "test": "node test/all.mjs",
@@ -33,6 +34,9 @@
     "node": ">=22"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [

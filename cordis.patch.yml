@@ -1,0 +1,3 @@
+- insert:
+    - id: agent-pipeline
+      name: "dsh-agent-pipeline"

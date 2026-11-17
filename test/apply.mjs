@@ -26,6 +26,7 @@ let registered = null
 /** Tools and commands the plugin registers; both are its agent- and user-facing entry points. */
 const registeredTools = []
 const registeredCommands = []
+const registeredSections = []
 
 /**
  * A fresh recording context.
@@ -58,6 +59,7 @@ function ctxWithRecording() {
       },
     },
     tools: { register: (def) => { registeredTools.push(def); return () => {} } },
+    systemPrompt: { section: (def) => { registeredSections.push(def); return () => {} } },
     get: (k) => {
       if (k === "commands") return { register: (def) => { registeredCommands.push(def); return () => {} } }
       return undefined
@@ -678,6 +680,40 @@ await t("an empty /flow argument reports the usage instead of a listing", () => 
   assert(r.kind === "error", `kind=${r.kind}`)
   assert(/Usage/.test(r.text), `should name the usage, got: ${r.text}`)
   assert(!/demo/.test(r.text.split("\n")[0]), "should not list the flows as a heading")
+})
+
+console.log("\n=== the agent is told the pipelines exist ===")
+
+await t("apply tells the agent which flows it can start", () => {
+  // Registering start_flow is not enough on its own: nothing makes a model go
+  // looking for a tool it has never heard of. Without this section the flow
+  // engine loads, registers, and then never runs — which is what happened.
+  const before = registeredSections.length
+  host.apply(ctxWithRecording(), config)
+  const added = registeredSections.slice(before)
+  assert(added.length === 1, `sections added: ${added.length}`)
+  const section = added[0]
+  assert(section.name === "agent-pipeline", `name=${section.name}`)
+  assert(section.text.includes("start_flow"), "the prompt must name the tool")
+  assert(section.text.includes("demo"), "the prompt must name the flows available here")
+})
+
+await t("the prompt states when not to start one", () => {
+  // A prompt that only lists the flows invites a flow on every message.
+  const before = registeredSections.length
+  host.apply(ctxWithRecording(), config)
+  const section = registeredSections.slice(before)[0]
+  assert(/Do not start one/i.test(section.text), `no boundary stated: ${section.text}`)
+})
+
+await t("a workspace with no flows gets no prompt", () => {
+  // An agent told about pipelines it cannot start would call a tool that always
+  // fails.
+  const before = registeredSections.length
+  host.apply(ctxWithRecording(), {
+    workspaces: [{ path: "/tmp/dsh-decision-orchestrator-test-workspace", enabled: false, steps: {}, flows: [] }],
+  })
+  assert(registeredSections.length === before, "no section should be added")
 })
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
