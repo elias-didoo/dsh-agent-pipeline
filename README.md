@@ -244,15 +244,23 @@ Two different languages are in play, and they follow different rules.
 
 | What | Follows |
 |---|---|
-| Panel text, and the "please continue" prompt sent to the agent | **Your DSH language setting** |
-| Branch criteria (the text sent to the decision model) | **Chinese, always** |
+| Panel text, `/flow` replies, and the "please continue" prompt sent to the agent | **Your DSH language setting** |
+| What the decision model is asked at a branch | **Whatever you wrote in that step's `question`** |
 
-The panel reads the language from DSH settings, so it matches the rest of the
-UI without extra configuration. If you have never explicitly picked a language
-in DSH, the plugin falls back to English.
+The panel reads the language from DSH settings, so it matches the rest of the UI
+without extra configuration. If you have never explicitly picked a language in
+DSH, the plugin falls back to English.
 
-The criteria stay Chinese for the reason above: the model separates situations far
-more reliably in Chinese. They are model input, not documentation.
+The branch question is sent to the model **verbatim**. The plugin does not
+translate it, normalise it, or pick a language for it — it is model input, not
+documentation. Write it in whichever language your model separates the two cases
+more reliably in, and phrase it as a direct either/or that says what to look at:
+a question the model can answer from the reply alone scores higher than a
+paraphrase of it.
+
+> A note from development, not a rule. The 4B model this plugin was built against
+> separated the two cases more reliably in Chinese than in English. That is a
+> property of one model, not of the plugin — your model, your call.
 
 ## Confidence
 
