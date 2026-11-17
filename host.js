@@ -360,6 +360,13 @@ export function apply(ctx, config) {
   //
   // Only when a workspace actually offers one: an agent told about pipelines it
   // cannot start would call a tool that always fails.
+  // The section is static — `section()` takes no per-session filter — so it has
+  // to say which workspace the pipelines belong to. Without that, an agent
+  // working in any other workspace is told about flows and calls a tool that
+  // refuses, which is worse than saying nothing.
+  const pipelineWorkspaces = configValid
+    ? workspacesOf(config).filter((w) => w.enabled === true).map((w) => w.path)
+    : []
   if (allFlowNames.length > 0) {
     try {
       ctx.systemPrompt.section({
@@ -369,9 +376,9 @@ export function apply(ctx, config) {
         // beside them rather than in the tool-listing block.
         order: 2450,
         text: [
-          `This workspace has fixed review pipelines: ${allFlowNames.join(", ")}.`,
-          "Call start_flow when the user asks for a requirement, reports a bug, or asks about a rebase conflict.",
-          "Do not start one for a plain question, a general discussion, or a change that is none of those.",
+          `The workspace ${pipelineWorkspaces.join(", ")} has fixed review pipelines: ${allFlowNames.join(", ")}.`,
+          "In that workspace, call start_flow when the user asks for a requirement, reports a bug, or asks about a rebase conflict.",
+          "Do not start one for a plain question, a general discussion, or a change that is none of those, and do not try in any other workspace.",
         ].join(" "),
       })
       log({ ev: "prompt-registered", flows: allFlowNames })

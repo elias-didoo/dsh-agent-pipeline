@@ -699,6 +699,11 @@ await t("apply tells the agent which flows it can start", () => {
   assert(Number.isFinite(section.order), `order must be a finite number, got ${JSON.stringify(section.order)}`)
   assert(section.text.includes("start_flow"), "the prompt must name the tool")
   assert(section.text.includes("demo"), "the prompt must name the flows available here")
+  // The section is static and reaches every workspace, so it has to say which
+  // one the pipelines belong to; otherwise an agent elsewhere calls a tool that
+  // refuses.
+  assert(section.text.includes("/tmp/dsh-decision-orchestrator-test-workspace"),
+    `the prompt must name the workspace: ${section.text}`)
 })
 
 await t("the prompt states when not to start one", () => {
