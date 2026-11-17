@@ -332,6 +332,18 @@ tail -f ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 | `error` / `retry` / `stop` | 某一轮出错、重试或终止；`why` 说明是哪种 |
 | `send-fail` | 发送失败；含 `err` |
 
+## 发版
+
+发版由 tag 触发，普通提交不打包。这个项目没有需要编译的产物，所以一次 release 就是挂在 tag 上的那个 tarball。
+
+1. 改 `package.json` 的 `version`
+2. 在 CHANGELOG 里为新版本加一段 `## <version>`
+3. `git commit`，然后 `git tag v<version>` 并推送 tag
+
+工作流随后会检查 tag 与 `package.json` 是否一致、跑类型检查、跑测试套件、打包，并用该版本的 CHANGELOG 段落作为 release note。不一致会在发布前失败——`npm pack` 按 `package.json` 而不是 tag 命名 tarball，两者漂移会产生一个文件名与自身矛盾的 release。
+
+CI 里会跳过需要真实模型的套件（`--fast`），它要求 `127.0.0.1:8080` 有模型服务，CI 上没有。其余的必须全过。
+
 ## 测试
 
 ```bash

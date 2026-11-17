@@ -400,6 +400,25 @@ tail -f ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 | `error` / `retry` / `stop` | A turn failed, was retried, or the run terminated — `why` says which |
 | `send-fail` | Send failed; includes `err` |
 
+## Releasing
+
+Publishing is a tag, not a commit. Ordinary pushes build nothing: there is no
+compiled artifact to produce, so a release is only ever the tarball attached to
+the tag that already describes it.
+
+1. Set `version` in `package.json`.
+2. Move the CHANGELOG's content under a new `## <version>` heading.
+3. `git commit`, then `git tag v<version>` and push the tag.
+
+The workflow then checks that the tag and `package.json` agree, type-checks, runs
+the suites, packs, and creates the release with that version's CHANGELOG section
+as its notes. A mismatch fails before anything is published — `npm pack` names
+the tarball after `package.json`, not after the tag, so the two drifting apart
+would produce a release whose file name contradicts it.
+
+The live-model suite is skipped in CI (`--fast`); it needs a model server on
+`127.0.0.1:8080`, which CI does not have. Everything else must pass.
+
 ## Tests
 
 ```bash

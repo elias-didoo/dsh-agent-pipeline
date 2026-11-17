@@ -1,0 +1,67 @@
+name: Release
+
+# Publishing is a deliberate act: pushing a `v*` tag. Ordinary commits build
+# nothing — this plugin has no compiled artifact to produce, so a release is only
+# ever the tarball attached to the tag that already describes it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: The tag and the package version must agree
+        # npm pack names the tarball after package.json, not after the tag. A
+        # mismatch ships a file whose name contradicts the release that carries
+        # it, and nothing downstream notices.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+          echo "tag v$tag matches package.json"
+
+      - name: Type check
+        run: ./test/typecheck.sh
+
+      - name: Test
+        # --fast skips the suite that needs a live model server at 127.0.0.1:8080.
+        # Everything else must pass: a release is the one place a broken build
+        # reaches someone who cannot see the CI logs.
+        run: node test/all.mjs --fast
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The notes are this version's CHANGELOG section, not the whole file:
+        # a release that repeats every earlier release is one nobody reads.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## " v "([ —-]|$)" { on = 1; next }
+            on && /^## / { exit }
+            on
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" ./*.tgz \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag
