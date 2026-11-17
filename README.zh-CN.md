@@ -289,6 +289,8 @@ tail -f ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 | `locale` | 本次进程解析出的界面语言 |
 | `projection-ready` | 投影已注册就绪 |
 | `tools-registered` | `start_flow` 已注册，含可用的流程名 |
+| `prompt-registered` | 已告诉 agent 这些流程存在。没有这行就不会有流程被启动：工具在，但没有任何东西指向它 |
+| `prompt-fail` | 注入提示失败，`err` 说明原因 |
 | `commands-registered` | 面板的 `flow` 命令已注册 |
 | `flow-start` | 启动了某条流程；`flow` 说明是哪条 |
 | `flow-control` | 暂停/继续/取消已生效；`action` 说明是哪个 |

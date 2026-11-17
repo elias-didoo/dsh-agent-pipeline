@@ -343,6 +343,8 @@ tail -f ~/.dsh/agent-pipeline/logs/$(date +%F).jsonl
 | `locale` | UI language resolved for this process |
 | `projection-ready` | Projection registered and ready |
 | `tools-registered` | `start_flow` registered, with the flow names it offers |
+| `prompt-registered` | The agent was told those flows exist. Without this line a flow is never started: the tool is available but nothing points at it |
+| `prompt-fail` | Registering that prompt section failed; `err` says why |
 | `commands-registered` | The panel's `flow` command registered |
 | `flow-start` | A flow was started; `flow` says which |
 | `flow-control` | Pause, resume or cancel was applied; `action` says which |
