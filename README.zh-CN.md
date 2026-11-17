@@ -21,7 +21,7 @@ agent 每做完一步都会停下来。你看完改动，敲一句「继续」�
 
 ```mermaid
 graph LR
-  U[你："看看这个改动"] --> S[start_flow]
+  U[你：看看这个改动] --> S[start_flow]
   S --> A[第 1 步 · send]
   A --> T[本轮结束]
   T --> K{该步的 do}

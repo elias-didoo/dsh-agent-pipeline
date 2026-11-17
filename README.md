@@ -27,10 +27,10 @@ where the pipeline genuinely forks.
 
 ```mermaid
 graph LR
-  U[you: "review this"] --> S[start_flow]
+  U[you: review this] --> S[start_flow]
   S --> A[step 1 · send]
   A --> T[turn ends]
-  T --> K{the step's do}
+  T --> K{what the step says}
   K -->|send| A
   K -->|stop| W[waits for you]
   K -->|branch| M[local model picks]

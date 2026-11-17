@@ -217,5 +217,21 @@ await t("neither README still explains the retired stage model", () => {
   }
 })
 
+await t("mermaid blocks avoid the syntax GitHub refuses", () => {
+  // A node label containing a double quote ends the label early:
+  //   U[you: "review this"]  ->  Parse error on line 2
+  // GitHub shows "Unable to render rich display" instead of the diagram, which
+  // is worse than no diagram at all. Nothing here can run mermaid, so this
+  // checks the one construct that breaks it.
+  for (const file of ["README.md", "README.zh-CN.md"]) {
+    const src = readFileSync(join(ROOT, file), "utf8")
+    const blocks = [...src.matchAll(/```mermaid\n([\s\S]*?)```/g)].map((m) => m[1])
+    for (const [i, code] of blocks.entries()) {
+      const bad = code.split("\n").filter((line) => /[[{(][^\]})]*"/.test(line))
+      assert(bad.length === 0, `${file} block ${i + 1}: a quoted node label breaks the parser — ${bad[0]?.trim()}`)
+    }
+  }
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
