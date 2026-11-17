@@ -319,11 +319,13 @@ export function apply(ctx, config) {
   // Only a validated config has a shape `flows` can be read from: the raw one
   // carries a list, whose keys are indices. Without this guard an invalid
   // config registers a tool offering a flow called "0".
-  const allFlowNames = configValid
-    ? [...new Set(workspacesOf(config)
-      .filter((w) => w.enabled === true)
-      .flatMap((w) => Object.keys(w.flows ?? {})))]
+  // One traversal, so the flow names and the workspaces that offer them cannot
+  // disagree: a prompt naming a workspace whose pipelines were left out — or the
+  // reverse — would send an agent at a tool that refuses.
+  const pipelineWorkspaces = configValid
+    ? workspacesOf(config).filter((w) => w.enabled === true)
     : []
+  const allFlowNames = [...new Set(pipelineWorkspaces.flatMap((w) => Object.keys(w.flows ?? {})))]
   const labelFor = (name) => {
     for (const ws of workspacesOf(config)) {
       const f = ws?.flows?.[name]
@@ -364,9 +366,6 @@ export function apply(ctx, config) {
   // to say which workspace the pipelines belong to. Without that, an agent
   // working in any other workspace is told about flows and calls a tool that
   // refuses, which is worse than saying nothing.
-  const pipelineWorkspaces = configValid
-    ? workspacesOf(config).filter((w) => w.enabled === true).map((w) => w.path)
-    : []
   if (allFlowNames.length > 0) {
     try {
       ctx.systemPrompt.section({
@@ -376,7 +375,7 @@ export function apply(ctx, config) {
         // beside them rather than in the tool-listing block.
         order: 2450,
         text: [
-          `The workspace ${pipelineWorkspaces.join(", ")} has fixed review pipelines: ${allFlowNames.join(", ")}.`,
+          `The workspace ${pipelineWorkspaces.map((w) => w.path).join(", ")} has fixed review pipelines: ${allFlowNames.join(", ")}.`,
           "In that workspace, call start_flow when the user asks for a requirement, reports a bug, or asks about a rebase conflict.",
           "Do not start one for a plain question, a general discussion, or a change that is none of those, and do not try in any other workspace.",
         ].join(" "),

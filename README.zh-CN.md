@@ -18,32 +18,29 @@
 
 ```bash
 git clone https://github.com/elias-didoo/dsh-agent-pipeline.git \
-  ~/.dsh/plugins/agent-pipeline
-cd ~/.dsh/plugins/agent-pipeline
+  ~/Downloads/agent-pipeline
+cd ~/Downloads/agent-pipeline
 npm test          # 可选，验证环境
 ```
 
-然后在 `~/.dsh/profiles/desktop/package.json` 加依赖：
+按 DSH 插件的方式装成 **bundle**——**Plugins → Add plugin** 填目录路径，或者：
 
 ```json
-{
-  "dependencies": {
-    "dsh-agent-pipeline": "file:../../plugins/agent-pipeline"
-  }
-}
+{ "action": "install_bundle", "target": "/absolute/path/to/agent-pipeline" }
 ```
 
-最后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里挂载（配置样例见下文[「流程怎么配」](#流程怎么配)）：
+然后在 `~/.dsh/profiles/desktop/cordis.patch.yml` 给它配置。只写 `id`、不带 `insert` 的 patch 会**整体替换**那一行的 config，entry 本身由 bundle 提供：
 
 ```yaml
-- insert:
-    - id: agent-pipeline
-      name: "dsh-agent-pipeline"
-      config:
-        # ...
+- id: agent-pipeline
+  name: "dsh-agent-pipeline"
+  config:
+    # 完整样例见下文「流程怎么配」
 ```
 
-**重启 DSH 生效。** client 面板需要重启后才会出现。
+**不要给这个插件写 `- insert:`。** bundle 已经插入过这一行，同一个 id 再插一次会被拒绝；而纯手工挂载的插件不算已安装的 bundle，插件列表里也就看不到它。
+
+**重启 DSH 生效。** 面板和工作区菜单要重启后才出现——重载只换掉 Host 那一半，浏览器里的模块代际不会变。
 
 ## 工作方式
 

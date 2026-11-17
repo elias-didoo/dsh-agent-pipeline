@@ -18,32 +18,35 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that runs a workspac
 
 ```bash
 git clone https://github.com/elias-didoo/dsh-agent-pipeline.git \
-  ~/.dsh/plugins/agent-pipeline
-cd ~/.dsh/plugins/agent-pipeline
+  ~/Downloads/agent-pipeline
+cd ~/Downloads/agent-pipeline
 npm test          # optional, verifies your environment
 ```
 
-Add the dependency to `~/.dsh/profiles/desktop/package.json`:
+Install it as a bundle, the way any DSH plugin is installed — **Plugins → Add
+plugin** with the directory path, or:
 
 ```json
-{
-  "dependencies": {
-    "dsh-agent-pipeline": "file:../../plugins/agent-pipeline"
-  }
-}
+{ "action": "install_bundle", "target": "/absolute/path/to/agent-pipeline" }
 ```
 
-Mount it in `~/.dsh/profiles/desktop/cordis.patch.yml` (full config example under [Configuring a flow](#configuring-a-flow)):
+Then give the row its config in `~/.dsh/profiles/desktop/cordis.patch.yml`. A
+patch that names an existing row by `id` and carries no `insert` **replaces**
+that row's config; the bundle keeps providing the row itself:
 
 ```yaml
-- insert:
-    - id: agent-pipeline
-      name: "dsh-agent-pipeline"
-      config:
-        # ...
+- id: agent-pipeline
+  name: "dsh-agent-pipeline"
+  config:
+    # full example under "Configuring a flow"
 ```
 
-**Restart DSH.** The sidebar panel only appears after a restart.
+Do not write `- insert:` for this plugin. The bundle already inserts the row, and
+a second insertion under the same id is rejected — and a plugin mounted only by
+hand is not an installed bundle, so it never appears in the plugin list.
+
+**Restart DSH.** The panel and the workspace menu only appear after a restart:
+a reload replaces the host half, not the browser's module generation.
 
 ## How it works
 
