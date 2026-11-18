@@ -269,5 +269,16 @@ await t("does not import @deepseek-ai/*", () => {
   }
 })
 
+await t("the menu action's label is a plain string", () => {
+  // A menu builds its rows with `label` as-is — it never calls it — so a thunk
+  // renders as a blank row. This is the opposite of a slot's `label`, which is
+  // re-read on every projection by design.
+  const at = clientCode.indexOf("contextMenus.register(")
+  assert(at >= 0, "menu registration not found")
+  const slice = clientCode.slice(at, at + 1200)
+  assert(!/label:\s*\(\s*\)\s*=>/.test(slice), "menu label is a thunk; the row would render blank")
+  assert(/label:\s*makeT\(/.test(slice), "menu label should come from makeT")
+})
+
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

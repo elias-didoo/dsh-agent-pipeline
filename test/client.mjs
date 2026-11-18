@@ -411,7 +411,11 @@ await t("the workspace menu offers one action, labelled in the active language",
   const menu = m.registered.menus[0]
   assert(menu.target === "workspace", `target=${menu.target}`)
   const item = menu.resolve({ workspaceId: "w1", displayTitle: "brandu" })[0]
-  assert(item.label() === "Agent 流程…", `label=${item.label()}`)
+  // A string, not a thunk: the menu builds its rows with `label` as-is, so a
+  // function renders as a blank row. Only a slot's `label` is re-read per
+  // projection; a menu action's is not.
+  assert(typeof item.label === "string", `label is ${typeof item.label}, must be a string`)
+  assert(item.label === "Agent 流程…", `label=${item.label}`)
 })
 
 await t("the panel is closed until the menu is used", () => {

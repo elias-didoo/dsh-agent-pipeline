@@ -446,11 +446,17 @@ window.__ModuleLoader__.load({
           // Between rename (100) and delete (300): reading what a workspace runs
           // belongs near renaming it, far from deleting it.
           order: 250,
-          resolve: (target) => [{
-            id: "rules",
-            label: () => makeT(activeLocale)("rules.menu"),
-            run: () => setRulesTarget(target),
-          }],
+          // `label` is read as a string when the menu builds its rows, not
+          // called — a thunk here renders as the function's source, which is a
+          // blank row. Resolved now, so the row follows the current language.
+          resolve: (target, signal) => {
+            if (signal?.aborted) return []
+            return [{
+              id: "rules",
+              label: makeT(activeLocale)("rules.menu"),
+              run: () => setRulesTarget(target),
+            }]
+          },
         })
       } catch (e) {
         // Declared in `inject`, so the service is present; a throw here is a
