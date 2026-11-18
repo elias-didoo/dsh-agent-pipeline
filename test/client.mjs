@@ -95,7 +95,7 @@ function projectionView(overrides = {}) {
 /** Mount the client against a fake ctx and return the registered pieces. */
 function mount({ locale = "zh", view = projectionView(), workspaceId = "w1" } = {}) {
   const { mod, def } = load(locale)
-  const registered = { menus: [], slot: null, overlay: null, dicts: [] }
+  const registered = { menus: [], slot: null, overlay: null, dicts: [], commands: [] }
   const session = { id: "s1", workspaceId, projectionValues: { "agent-pipeline": view } }
   const ctx = {
     effect: (fn) => { fn() },
@@ -127,7 +127,9 @@ function mount({ locale = "zh", view = projectionView(), workspaceId = "w1" } = 
         }),
       },
     },
-    get: (k) => (k === "locale"
+    get: (k) => (k === "remote"
+      ? { commands: { execute: (...args) => { registered.commands.push(args) } } }
+      : k === "locale"
       ? {
         register: (ns, id, dict) => { registered.dicts.push({ ns, id, dict }); return () => {} },
         getLocale: () => ({ active: locale }),
@@ -135,7 +137,7 @@ function mount({ locale = "zh", view = projectionView(), workspaceId = "w1" } = 
       : undefined),
   }
   mod.apply(ctx)
-  return { registered, def, ctx }
+  return { registered, def, mod, ctx }
 }
 
 
@@ -321,8 +323,10 @@ await t("pressing pause runs the host command", () => {
   const ctx = {
     effect: (fn) => { fn() },
     slots: { inject: (_k, gen) => { const it = gen(); it.next(); return () => {} }, register: (_d, c) => { registered = c; return () => {} } },
-    get: (k) => (k === "locale" ? { register: () => {}, getLocale: () => ({ active: "zh" }) } : undefined),
-    remote: { commands: { execute: (...args) => calls.push(args) } },
+    get: (k) => (k === "remote"
+      ? { commands: { execute: (...args) => calls.push(args) } }
+      : k === "locale" ? { register: () => {}, getLocale: () => ({ active: "zh" }) } : undefined),
+    contexts: {},
   }
   mod.apply(ctx)
   const view = projectionView()
@@ -512,6 +516,32 @@ await t("a workspace the plugin is off for shows the off state", () => {
   const m = mount({ view: { enabled: false, flow: null, definition: null } })
   const head = render(kids(openPanel(m))[0])
   assert(textOf(kids(head)[1]) === "未启用", `state=${textOf(kids(head)[1])}`)
+})
+
+await t("the client declares every service it reads", () => {
+  // A Client half loaded through __ModuleLoader__ gets a restricted context:
+  // `ctx.slots`, `ctx.contextMenus` and friends are readable only when named in
+  // the returned plugin's `inject`, and reading an undeclared one throws. The
+  // throw is caught by the `try` around the menu registration, so the symptom is
+  // a menu that never appears with nothing in the log — which is exactly how the
+  // workspace entry went missing for a day.
+  const m = mount({ view: rulesView() })
+  const declared = new Set(m.mod.inject ?? [])
+  assert(declared.size > 0, "the returned plugin declares no inject list")
+
+  const src = readFileSync(join(ROOT, "client.js"), "utf8")
+  // Property reads on ctx, ignoring `ctx.get(...)` which needs no declaration.
+  // Property reads only. `ctx.get("name")` needs no declaration, so a name that
+  // appears as a string argument is not a property read.
+  const viaGet = new Set([...src.matchAll(/ctx\.get\(["']([a-zA-Z]+)["']\)/g)].map((x) => x[1]))
+  const used = new Set(
+    [...src.matchAll(/ctx\.([a-zA-Z]+)/g)]
+      .map((x) => x[1])
+      .filter((name) => !["get", "on", "once", "provide", "effect"].includes(name))
+      .filter((name) => !viaGet.has(name)),
+  )
+  const missing = [...used].filter((name) => !declared.has(name))
+  assert(missing.length === 0, `read but not declared: ${missing.join(", ")}`)
 })
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`)

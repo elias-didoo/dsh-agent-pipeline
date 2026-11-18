@@ -382,10 +382,15 @@ window.__ModuleLoader__.load({
        */
       const onControl = (sessionId, action) => {
         try {
-          const commands = ctx.remote?.commands
+          // `ctx.get` rather than `ctx.remote`: the restricted context refuses an
+          // undeclared property read by throwing, which `?.` does not soften, so
+          // `ctx.remote` would throw here every time. `get` needs no declaration,
+          // and this call is optional — pause is a convenience, and a profile
+          // without the remote service still renders the panel.
+          const commands = ctx.get("remote")?.commands
           if (!commands || typeof commands.execute !== "function") return
           commands.execute(sessionId, `/flow ${action}`, [], new AbortController().signal)
-        } catch { /* ignore */ }
+        } catch { /* the panel still renders without host control */ }
       }
 
       // ── Open state for the definition panel ──
@@ -409,8 +414,8 @@ window.__ModuleLoader__.load({
        */
       const definitionFor = (workspaceId) => {
         try {
-          const byId = ctx.sessions?.list?.getSnapshot?.()?.byId ?? {}
-          const items = ctx.workspaces?.list?.getSnapshot?.()?.items ?? []
+          const byId = ctx.sessions.list.getSnapshot().byId ?? {}
+          const items = ctx.workspaces.list.getSnapshot().items ?? []
           const ws = items.find((i) => i.workspaceId === workspaceId)
           const ids = ws?.sessionIds ?? []
           for (const id of ids) {
@@ -429,7 +434,7 @@ window.__ModuleLoader__.load({
       // Reading the rules is a view interaction, so it needs no tool and no
       // command — the host's `/flow` only starts and steers a pipeline.
       try {
-        ctx.contextMenus?.register?.({
+        ctx.contextMenus.register({
           id: "agentPipeline.rules",
           target: "workspace",
           // Between rename (100) and delete (300): reading what a workspace runs
@@ -441,7 +446,13 @@ window.__ModuleLoader__.load({
             run: () => setRulesTarget(target),
           }],
         })
-      } catch { /* a host without the menu service has no entry */ }
+      } catch (e) {
+        // Declared in `inject`, so the service is present; a throw here is a
+        // duplicate id or a host that changed its registration shape. Say so
+        // rather than silently having no menu — that is what made the missing
+        // entry invisible the first time.
+        console.error("[agent-pipeline] workspace menu registration failed:", e)
+      }
 
       // ── The definition panel ──
       // `shell.overlay` is the frame-wide layer, so the dialog is not confined
@@ -505,6 +516,15 @@ window.__ModuleLoader__.load({
       })
     }
 
-    return { apply: applyClient }
+    // The services this client reads, by **service name**. A Client half loaded
+    // through `__ModuleLoader__` gets a restricted context: `ctx.slots`,
+    // `ctx.contextMenus` and the rest are readable only when named here, and
+    // reading an undeclared one throws. `dsh.client.inject` in package.json is a
+    // different list — package names, for activation order — and does not
+    // satisfy this.
+    return {
+      inject: ["slots", "contextMenus", "locale", "sessions", "workspaces"],
+      apply: applyClient,
+    }
   },
 })

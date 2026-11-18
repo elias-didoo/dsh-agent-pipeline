@@ -62,7 +62,7 @@ await t("the client registers a workspace context menu for the definition panel"
   // Reading what a workspace runs is a view interaction, so it is a menu entry
   // rather than a command: `/flow` declares `input` and is therefore always
   // intercepted for an argument, which leaves no room for a "show" case there.
-  assert(/contextMenus\?\.register/.test(clientCode), "client must register a context menu")
+  assert(/contextMenus\.register\(/.test(clientCode), "client must register a context menu")
   const target = /target:\s*"([^"]+)"/.exec(clientCode)?.[1]
   assert(target === "workspace", `menu target should be "workspace", got ${target}`)
 })
@@ -135,7 +135,7 @@ await t("the client never writes flow state itself", () => {
   // The host owns the flow. A client-side write would be a second copy that
   // the next projection overwrites, so the button would appear to do nothing.
   assert(!/status:\s*"paused"/.test(clientCode), "client must not construct a state")
-  assert(/remote\?\.commands/.test(clientCode), "control must go through the host command")
+  assert(/get\("remote"\)\?\.commands|remote\?\.commands/.test(clientCode), "control must go through the host command")
 })
 
 await t("status marks are distinct", () => {
