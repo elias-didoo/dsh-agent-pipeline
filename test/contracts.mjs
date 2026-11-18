@@ -88,11 +88,14 @@ function registerDefinition() {
   throw new Error("register definition is unbalanced")
 }
 
-await t("the register definition names the entry and gives it an id", () => {
+await t("the register definition gives the entry an id", () => {
+  // A slot registration takes `id` and optionally `order` and `label` — see the
+  // slot's own `registration` in Slots.listSubTree. An earlier version of this
+  // check required a `name` field, which no slot declares: the value it carried
+  // was the plugin's namespace, not the slot's name.
   const def = registerDefinition()
-  for (const k of ["name", "id"]) {
-    assert(new RegExp(`\\b${k}\\s*:`).test(def), `register definition missing ${k}`)
-  }
+  assert(/\bid\s*:/.test(def), "register definition missing id")
+  assert(!/\bname\s*:/.test(def), "register definition carries a name field, which no slot declares")
 })
 
 await t("the dock entry gives itself an id of its own", () => {

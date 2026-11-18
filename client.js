@@ -1,16 +1,22 @@
 /**
- * dsh-agent-pipeline client: the standing flow panel.
+ * dsh-agent-pipeline client: two ways to see a flow.
  *
- * One panel, docked above the composer beside the todo list and the goal: the
- * running flow's steps, marked done / in progress / pending, with pause, resume
- * and cancel. It renders from the session projection rather than from the
+ * A standing panel, docked above the composer beside the todo list and the goal:
+ * the running flow's steps, marked done / in progress / pending, with pause,
+ * resume and cancel. It renders from the session projection rather than from the
  * current turn, which is what makes it stay put when the user sends a message —
  * the failure mode of a per-turn panel.
  *
- * Registration mirrors the built-in client plugins:
- *   ctx.slots.inject(`conversation.input.dock`, function* () {
- *     yield ctx.slots.register({ name, id, locale, inject }, Component)
+ * And a read-only view of the rules themselves, opened from a workspace's
+ * right-click menu and drawn in `shell.overlay`: every flow, every step, the
+ * whole prompt, and where each branch leads. Reading them is a view action, so
+ * it needs no tool and no command — `/flow` starts and steers.
+ *
+ * Both register through a slot:
+ *   ctx.slots.inject("conversation.input.dock", function* () {
+ *     yield ctx.slots.register({ id: "flow" }, Component)
  *   })
+ * A registration takes `id` and optionally `order` and `label`, and nothing else.
  *
  * Source, comments and docs are English throughout this repo. UI strings stay
  * bilingual in DICT because they are what the user reads in the panel.
@@ -85,20 +91,20 @@ window.__ModuleLoader__.load({
      * component.
      */
     const STYLE = `
-.do-flow{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:8px;background:var(--dsw-alias-background-secondary,rgba(255,255,255,.03));font-size:12px;line-height:1.5;box-sizing:border-box}
-.do-flow-head{display:flex;align-items:center;gap:8px}
-.do-flow-title{font-weight:600;color:var(--dsw-alias-text-primary,#ddd)}
-.do-flow-count{color:var(--dsw-alias-text-secondary,#999);font-variant-numeric:tabular-nums}
-.do-flow-badge{padding:1px 8px;border-radius:9px;background:rgba(150,150,150,.16);color:var(--dsw-alias-text-secondary,#999)}
-.do-flow-note{color:var(--dsw-alias-text-secondary,#999);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
-.do-flow-spacer{flex:1}
-.do-flow-btn{background:transparent;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);color:var(--dsw-alias-text-secondary,#aaa);border-radius:5px;padding:1px 8px;font-size:11px;cursor:pointer;line-height:1.6}
-.do-flow-btn:hover{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));color:var(--dsw-alias-text-primary,#ddd)}
-.do-flow-steps{display:flex;flex-wrap:wrap;gap:4px 10px}
-.do-flow-step{display:flex;align-items:center;gap:5px;color:var(--dsw-alias-text-secondary,#999)}
-.do-flow-step-done{color:var(--dsw-alias-text-primary,#ccc)}
-.do-flow-step-ongoing{color:var(--dsw-alias-text-link,#6aa8ff);font-weight:600}
-.do-flow-mark{font-size:11px;line-height:1}
+.ap-dock{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:8px;background:var(--dsw-alias-background-secondary,rgba(255,255,255,.03));font-size:12px;line-height:1.5;box-sizing:border-box}
+.ap-dock-head{display:flex;align-items:center;gap:8px}
+.ap-dock-title{font-weight:600;color:var(--dsw-alias-text-primary,#ddd)}
+.ap-dock-count{color:var(--dsw-alias-text-secondary,#999);font-variant-numeric:tabular-nums}
+.ap-dock-badge{padding:1px 8px;border-radius:9px;background:rgba(150,150,150,.16);color:var(--dsw-alias-text-secondary,#999)}
+.ap-dock-note{color:var(--dsw-alias-text-secondary,#999);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
+.ap-dock-spacer{flex:1}
+.ap-dock-btn{background:transparent;border:1px solid var(--dsw-alias-border-primary,#3a3a3a);color:var(--dsw-alias-text-secondary,#aaa);border-radius:5px;padding:1px 8px;font-size:11px;cursor:pointer;line-height:1.6}
+.ap-dock-btn:hover{background:var(--dsw-alias-background-tertiary,rgba(255,255,255,.08));color:var(--dsw-alias-text-primary,#ddd)}
+.ap-dock-steps{display:flex;flex-wrap:wrap;gap:4px 10px}
+.ap-dock-step{display:flex;align-items:center;gap:5px;color:var(--dsw-alias-text-secondary,#999)}
+.ap-dock-step-done{color:var(--dsw-alias-text-primary,#ccc)}
+.ap-dock-step-ongoing{color:var(--dsw-alias-text-link,#6aa8ff);font-weight:600}
+.ap-dock-mark{font-size:11px;line-height:1}
 .ap-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42);padding:24px}
 .ap-panel{display:flex;flex-direction:column;width:min(780px,100%);max-height:min(80vh,760px);border:1px solid var(--dsw-alias-border-primary,#3a3a3a);border-radius:10px;background:var(--dsw-alias-background-primary,#1e1e1e);box-shadow:0 12px 40px rgba(0,0,0,.45);font-size:12.5px;line-height:1.6;color:var(--dsw-alias-text-primary,#ddd);box-sizing:border-box}
 .ap-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-primary,#3a3a3a)}
@@ -141,8 +147,8 @@ window.__ModuleLoader__.load({
 
     /** The marker and class for one step's state. */
     function stepMark(status) {
-      if (status === "done") return { mark: "\u25CF", cls: "do-flow-step-done" }
-      if (status === "ongoing") return { mark: "\u25D0", cls: "do-flow-step-ongoing" }
+      if (status === "done") return { mark: "\u25CF", cls: "ap-dock-step-done" }
+      if (status === "ongoing") return { mark: "\u25D0", cls: "ap-dock-step-ongoing" }
       return { mark: "\u25CB", cls: "" }
     }
 
@@ -165,20 +171,20 @@ window.__ModuleLoader__.load({
 
       return h(
         "div",
-        { className: "do-flow", "data-flow": flow.flow },
+        { className: "ap-dock", "data-flow": flow.flow },
         h(
           "div",
-          { className: "do-flow-head" },
-          h("span", { className: "do-flow-title" }, flow.label ?? flow.flow),
-          h("span", { className: "do-flow-count" }, t("flow.progress", { done: flow.done, total: flow.total })),
-          badge ? h("span", { className: "do-flow-badge" }, badge) : null,
-          flow.note ? h("span", { className: "do-flow-note", title: flow.note }, flow.note) : null,
-          h("span", { className: "do-flow-spacer" }),
+          { className: "ap-dock-head" },
+          h("span", { className: "ap-dock-title" }, flow.label ?? flow.flow),
+          h("span", { className: "ap-dock-count" }, t("flow.progress", { done: flow.done, total: flow.total })),
+          badge ? h("span", { className: "ap-dock-badge" }, badge) : null,
+          flow.note ? h("span", { className: "ap-dock-note", title: flow.note }, flow.note) : null,
+          h("span", { className: "ap-dock-spacer" }),
           // A finished flow offers nothing: pause and cancel would both be lies.
           finished ? null : h(
             "button",
             {
-              className: "do-flow-btn",
+              className: "ap-dock-btn",
               type: "button",
               onClick: () => onControl(sessionId, flow.status === "paused" ? "resume" : "pause"),
               title: t("flow.hint"),
@@ -187,13 +193,13 @@ window.__ModuleLoader__.load({
           ),
           finished ? null : h(
             "button",
-            { className: "do-flow-btn", type: "button", onClick: () => onControl(sessionId, "cancel") },
+            { className: "ap-dock-btn", type: "button", onClick: () => onControl(sessionId, "cancel") },
             t("flow.cancel"),
           ),
         ),
         h(
           "div",
-          { className: "do-flow-steps", role: "list" },
+          { className: "ap-dock-steps", role: "list" },
           ...(flow.steps ?? []).map((step) => {
             const { mark, cls } = stepMark(step.status)
             return h(
@@ -201,12 +207,12 @@ window.__ModuleLoader__.load({
               {
                 key: step.id,
                 role: "listitem",
-                className: `do-flow-step ${cls}`.trim(),
+                className: `ap-dock-step ${cls}`.trim(),
                 // The mark is decorative; the status is announced in words.
                 title: t(`step.${step.status}`),
                 "aria-label": `${step.label}: ${t(`step.${step.status}`)}`,
               },
-              h("span", { className: "do-flow-mark", "aria-hidden": "true" }, mark),
+              h("span", { className: "ap-dock-mark", "aria-hidden": "true" }, mark),
               h("span", null, step.label ?? step.id),
             )
           }),
@@ -364,9 +370,9 @@ window.__ModuleLoader__.load({
       }
 
       try {
-        if (typeof document !== "undefined" && !document.getElementById("do-style")) {
+        if (typeof document !== "undefined" && !document.getElementById("ap-style")) {
           const el = document.createElement("style")
-          el.id = "do-style"
+          el.id = "ap-style"
           el.textContent = STYLE
           document.head.appendChild(el)
         }
@@ -459,7 +465,7 @@ window.__ModuleLoader__.load({
       // to a column or a scroll container.
       ctx.slots.inject("shell.overlay", function* () {
         yield ctx.slots.register(
-          { name: NS, id: "rules" },
+          { id: "rules" },
           function RulesOverlay() {
             const [, force] = react.useState(0)
             react.useEffect(() => {
@@ -489,7 +495,6 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("conversation.input.dock", function* () {
         yield ctx.slots.register(
           {
-            name: NS,
             id: "flow",
             // After todo (0) and goal (10): a flow sits beside the plan and the
             // goal, not above them. Below queue (20) for the same reason.
@@ -516,14 +521,20 @@ window.__ModuleLoader__.load({
       })
     }
 
-    // The services this client reads, by **service name**. A Client half loaded
-    // through `__ModuleLoader__` gets a restricted context: `ctx.slots`,
-    // `ctx.contextMenus` and the rest are readable only when named here, and
-    // reading an undeclared one throws. `dsh.client.inject` in package.json is a
+    // The services this client reads, by **service name**.
+    //
+    // A Client half loaded through `__ModuleLoader__` gets a restricted context:
+    // reading `ctx.slots`, `ctx.contextMenus` or any other service throws unless
+    // the name is listed here. `dsh.client.inject` in package.json is a
     // different list — package names, for activation order — and does not
     // satisfy this.
+    //
+    // Listing a name declares a hard dependency: the runtime parks the whole
+    // client while the provider is away. So this holds only what the file reads
+    // as a property. `locale` and `remote` go through `ctx.get`, which needs no
+    // declaration, and the panel renders without either.
     return {
-      inject: ["slots", "contextMenus", "locale", "sessions", "workspaces"],
+      inject: ["slots", "contextMenus", "sessions", "workspaces"],
       apply: applyClient,
     }
   },
